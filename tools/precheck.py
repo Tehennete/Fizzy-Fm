@@ -70,6 +70,16 @@ def main():
             if 0xFFC00000 <= v < 0xFFD00000:
                 rom += 1
                 errors.append(f"{name}+{i:#x}: the word {v:#010x} reads as a ROM address")
+    # JieLi's compiler (clang 4) folds a clamp's bound and a scaling by a power of two after it into one constant,
+    # where this clang does not: every bound over 16 bits is tried against every such scaling here, in the source
+    for f in sorted((ROOT / "aplat").glob("ap_*.h")) + [ROOT / "aplat" / "aplat.c"]:
+        for ln_no, ln in enumerate(f.read_text().splitlines(), 1):
+            for m in re.finditer(r"clampi\([^;]*?,\s*-\s*(\d+)\s*,\s*(\d+)\s*\)", ln):
+                b = int(m.group(1))
+                bad = [k for k in range(13) if b > 32768 and 3145729 <= b << k <= 4194304]
+                if bad:
+                    rom += 1
+                    errors.append(f"{f.name}:{ln_no}: the bound {b} times {1 << bad[0]} reads as a ROM address")
     print(f"code + constants {text} B, .data {data} B, .bss {bss} B (RAM {data + bss} of {RAM_MAX}), "
           f"{rom} ROM-like constants")
     for e in errors[:20]:

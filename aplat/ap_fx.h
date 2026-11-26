@@ -40,8 +40,11 @@ static struct {
 } fx;
 
 static inline int16_t sat16(int32_t v) { return (int16_t)(v > 32767 ? 32767 : v < -32767 ? -32767 : v); }
-/* the bus is held to +-2^18 on its way through the effects: their products stay in 32 bits */
-#define BUS(x) clampi(x, -260000, 260000)
+/* the bus is held on its way through the effects: their products stay in 32 bits. The bound is one whose multiples
+ * by a power of two never read as an address in the chip's ROM (0xFFC00000..0xFFCFFFFF, -4194304..-3145729): JieLi's
+ * compiler folds a bound and the scaling after it into one constant, and fm1-dock's build refuses such a constant
+ * (260000 x 16 was one). tools/precheck.py checks every bound of this kind. */
+#define BUS(x) clampi(x, -300000, 300000)
 /* dry to wet by m (0..127) */
 #define MIXIN(dry, wet, m) ((dry) + ((((wet) - (dry)) * (m)) >> 7))
 /* a triangle from a phase: 0..65535 */
@@ -79,7 +82,7 @@ static void fx_fold(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, in
         for (i = 0; i < n; i++) {
             int32_t d = BUS(x[i]), t = ((d * g8) >> 8) + bias;
             uint32_t g = 12;
-            t = clampi(t, -400000, 400000);
+            t = clampi(t, -380000, 380000);
             while ((t > 30000 || t < -30000) && g--)
                 t = t > 0 ? 60000 - t : -60000 - t;
             x[i] = MIXIN(d, ((t - bias / 2) * 22000) >> 15, c);
@@ -190,7 +193,7 @@ static void fx_phaser(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, 
     fx.pha_ph += (uint32_t)(4000 + a * a * 28) * n;             /* 0.04 .. 4.6 Hz */
     for (ch = 0; ch < 2u; ch++) {
         int32_t *x = ch ? r : l, last = fx.pha_fb[ch], *px = fx.pha_x[ch], *py = fx.pha_y[ch], cf;
-        int32_t pitch = 55 * 256 + ((tri16(fx.pha_ph + (ch ? 0x40000000u : 0u)) * 52) >> 8);   /* 200 Hz .. 4 kHz */
+        int32_t pitch = 55 * 256 + (((tri16(fx.pha_ph + (ch ? 0x40000000u : 0u)) >> 2) * 13) >> 6);   /* 200 Hz .. 4 kHz */
         uint32_t ix = (uint32_t)(pitch - 2048) >> 7, g = AP_GTAB[ix] >> 8;                    /* tan, Q16 */
         cf = (int32_t)(((65536u - g) * 16384u) / ((65536u + g) >> 1));                         /* (1-g)/(1+g), Q15 */
         cf = (cf > 32767 ? 32767 : cf) * 65536;
@@ -202,7 +205,7 @@ static void fx_phaser(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, 
                 py[k] = o;
                 y = o;
             }
-            last = clampi(y, -200000, 200000);
+            last = clampi(y, -180000, 180000);
             x[i] = MIXIN(d, last, c);
         }
         fx.pha_fb[ch] = last;
@@ -544,12 +547,12 @@ static void master_run(int32_t *l, int32_t *r, int32_t *out, uint32_t n)
     if (peak < 3) {                             /* the last crumbs of an echo or a reverb: silence */
         for (i = 0; i < n; i++)
             l[i] = r[i] = 0;
-    } else if (peak > 260000) {                 /* far over the top (the gain's product must fit 32 bits) */
+    } else if (peak > 300000) {                 /* far over the top (the gain's product must fit 32 bits) */
         for (i = 0; i < n; i++) {
-            l[i] = clampi(l[i], -260000, 260000);
-            r[i] = clampi(r[i], -260000, 260000);
+            l[i] = clampi(l[i], -300000, 300000);
+            r[i] = clampi(r[i], -300000, 300000);
         }
-        peak = 260000;
+        peak = 300000;
     }
     need = peak > LIM_T ? (int32_t)(((uint32_t)LIM_T << 12) / (uint32_t)peak) : 4096;
     mst.need[2] = mst.need[1];

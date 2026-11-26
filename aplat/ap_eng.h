@@ -794,7 +794,7 @@ static void flt_comb(voice_t *v, int32_t *l, int32_t *r, uint32_t n, int32_t cut
             int32_t a = buf[p], y, in;
             y = (a + (((buf[(p - 1u) & (COMB_N - 1u)] - a) * (d & 255)) >> 8)) * 2;
             lp += ((y - lp) * damp) >> 15;
-            in = clampi(x[i] + ((lp * fb) >> 15), -65000, 65000);
+            in = clampi(x[i] + ((lp * fb) >> 15), -48000, 48000);
             buf[w] = (int16_t)(in >> 1);
             x[i] = in;
             w = (w + 1u) & (COMB_N - 1u);
@@ -1143,19 +1143,19 @@ static uint32_t voice_run(voice_t *v, int32_t *outl, int32_t *outr, uint32_t n)
         }
     }
 
-    /* out, the gains moving to this tick's (Q12 here: with the voice held to +-4.0 the product fits 32 bits) */
+    /* out, the gains moving to this tick's (Q12 here: with the voice held to +-3.0 the product fits 32 bits) */
     {
         int32_t gl = v->gl, gr = v->gr;
         if (stereo) {
             for (i = 0; i < n; i++) {
                 gl += dgl;
                 gr += dgr;
-                outl[i] += (clampi(vl[i], -131071, 131071) * (gl >> 11)) >> 12;
-                outr[i] += (clampi(vr[i], -131071, 131071) * (gr >> 11)) >> 12;
+                outl[i] += (clampi(vl[i], -98000, 98000) * (gl >> 11)) >> 12;
+                outr[i] += (clampi(vr[i], -98000, 98000) * (gr >> 11)) >> 12;
             }
         } else {
             for (i = 0; i < n; i++) {
-                int32_t x = clampi(vl[i], -131071, 131071);
+                int32_t x = clampi(vl[i], -98000, 98000);
                 gl += dgl;
                 gr += dgr;
                 outl[i] += (x * (gl >> 11)) >> 12;
