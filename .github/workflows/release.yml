@@ -23,4 +23,4 @@ jobs:
       test: |
         python3 -m pip install numpy
         DOCK="$PWD/.dock/fm1-dock" python3 tests/run_tests.py
-      packages: build/aplat*
+      packages: build/fizzy-fm*
