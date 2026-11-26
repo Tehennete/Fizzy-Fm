@@ -1,165 +1,362 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* APLAT's effects, in a row after the voices: drive, chorus, an echo in time with the tempo, a reverb, and a
- * soft ceiling so that a big chord rounds off instead of cutting flat. */
+/* Copyright (C) 2026 Hugo Gilbert */
+/* APLAT's effects: seven slots in a row after the voices, each with one of fourteen effects and three knobs, in the
+ * order you put them. An effect runs once: picked in two slots, it is the first one's. Then the way out: a limiter
+ * that sees a little ahead, so that a big chord is turned down instead of cut flat. */
 #ifndef AP_FX_H
 #define AP_FX_H
 
 #define CHO_N 1024u
+#define FLA_N 512u
+#define DIM_N 1024u
 #define DLY_N 24000u                            /* half-rate frames: 1.09 s */
-static int16_t cho_l[CHO_N], cho_r[CHO_N];
+static int16_t cho_l[CHO_N], cho_r[CHO_N], fla_l[FLA_N], fla_r[FLA_N], dim_l[DIM_N], dim_r[DIM_N];
 static int16_t dly_l[DLY_N], dly_r[DLY_N];
 static const uint16_t AP_LEN[4] = {71, 53, 191, 139};            /* the reverb's diffusers */
 static const uint16_t RV_LEN[4] = {709, 853, 967, 1103};         /* and its four lines (half-rate frames) */
 static int16_t ap_buf[4][192], rv_buf[4][1104];
 static struct {
-    uint32_t cho_w, cho_ph;
-    uint32_t dly_w;
-    int32_t dly_d;                              /* the delay now, frames Q8 (it slides to the tempo's) */
-    int32_t dly_lp[2];
-    int32_t dly_in, dly_ol, dly_or, dly_pl, dly_pr;
-    uint32_t dly_odd;
-    uint32_t ap_w[4], rv_w[4];
-    int32_t rv_lp[4];
-    int32_t rv_in, rv_ol, rv_or;
-    uint32_t rv_odd;
-    int32_t crush_l, crush_r;
+    uint32_t live;                              /* a bit per effect that ran last time (its memory is not clean) */
+    int32_t drv_lp[2];
+    int32_t crush[2];
     uint32_t crush_n;
+    int32_t cmp_env, cmp_g;
+    int32_t eq_lo[2], eq_hi[2];
+    int32_t flt_ic[2][2], flt_cut;
+    uint32_t pha_ph;
+    int32_t pha_x[2][4], pha_y[2][4], pha_fb[2];
+    uint32_t fla_w, fla_ph;
+    int32_t fla_fb[2];
+    uint32_t cho_w, cho_ph;
+    uint32_t dim_w, dim_ph;
+    uint32_t trm_ph;
+    uint32_t pmp_ph;
+    int32_t pmp_g;
+    uint32_t dly_w, dly_odd;
+    int32_t dly_d;                              /* the delay now, frames Q8 (it slides to the tempo's) */
+    int32_t dly_lp[2], dly_in, dly_ol, dly_or, dly_pl, dly_pr;
+    uint32_t ap_w[4], rv_w[4], rv_odd;
+    int32_t rv_lp[4], rv_in, rv_ol, rv_or;
 } fx;
 
 static inline int16_t sat16(int32_t v) { return (int16_t)(v > 32767 ? 32767 : v < -32767 ? -32767 : v); }
-
-static void fx_drive(int32_t *l, int32_t *r, uint32_t n)
+/* the bus is held to +-2^18 on its way through the effects: their products stay in 32 bits */
+#define BUS(x) clampi(x, -260000, 260000)
+/* dry to wet by m (0..127) */
+#define MIXIN(dry, wet, m) ((dry) + ((((wet) - (dry)) * (m)) >> 7))
+/* a triangle from a phase: 0..65535 */
+static inline int32_t tri16(uint32_t ph)
 {
-    int32_t amt = PV(DRV_AMT), gain = 4096 + amt * 226;         /* up to 8 x in, and less out to match */
-    int32_t make = (32767 * 4096) / (4096 + amt * 113);
-    uint32_t type = (uint32_t)PV(DRV_TYPE), i, c;
-    if (!amt)
-        return;
-    for (c = 0; c < 2u; c++) {
-        int32_t *x = c ? r : l;
-        switch (type) {
-        case 0:                                 /* SOFT: the curve of the filter's input */
-            for (i = 0; i < n; i++) {
-                int32_t t = clampi((int32_t)(((int64_t)x[i] * gain) >> 12), -49150, 49150), u = (t * 21845) >> 15;
-                int32_t u2 = (u * u) >> 15;
-                x[i] = ((t - ((((t * u2) >> 15) * 10923) >> 15)) * make) >> 15;
-            }
-            break;
-        case 1:                                 /* HARD */
-            for (i = 0; i < n; i++)
-                x[i] = (clampi((int32_t)(((int64_t)x[i] * gain) >> 12), -26000, 26000) * make) >> 15;
-            break;
-        case 2:                                 /* FOLD: what goes over the top comes back down */
-            for (i = 0; i < n; i++) {
-                int32_t t = clampi((int32_t)(((int64_t)x[i] * gain) >> 12), -250000, 250000);
-                uint32_t g = 8;
-                while ((t > 30000 || t < -30000) && g--)
-                    t = t > 0 ? 60000 - t : -60000 - t;
-                x[i] = (t * 22000) >> 15;
-            }
-            break;
-        default: {                              /* CRUSH: fewer bits, fewer frames */
-            uint32_t bits = 2u + (uint32_t)amt / 14u, hold = 1u + (uint32_t)amt / 6u, k = fx.crush_n;
-            int32_t h = c ? fx.crush_r : fx.crush_l;
-            for (i = 0; i < n; i++) {
-                if (!k) {
-                    h = (clampi(x[i], -32767, 32767) >> bits) * (1 << bits);
-                    k = hold;
-                }
-                k--;
-                x[i] = h;
-            }
-            if (c) { fx.crush_r = h; fx.crush_n = k; } else fx.crush_l = h;   /* (both sides count alike) */
-            break;
+    int32_t t = (int32_t)(ph >> 15) - 65536;
+    return t < 0 ? -t - 1 : t;
+}
+
+/* DRIVE: a soft curve; TONE dulls what it adds */
+static void fx_drive(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    int32_t g8 = (4096 + a * 226) >> 4, make = (4096 * 256) / (256 + a * 7), tc = 3000 + b * 234;
+    uint32_t i, ch;
+    for (ch = 0; ch < 2u; ch++) {
+        int32_t *x = ch ? r : l, lp = fx.drv_lp[ch];
+        for (i = 0; i < n; i++) {
+            int32_t d = BUS(x[i]), t = clampi((d * g8) >> 8, -49150, 49150), u = (t * 21845) >> 15;
+            int32_t u2 = (u * u) >> 15;
+            t = ((t - ((((t * u2) >> 15) * 10923) >> 15)) * make) >> 12;
+            lp += ((t - lp) * tc) >> 15;
+            x[i] = MIXIN(d, lp, c);
         }
+        fx.drv_lp[ch] = lp;
+    }
+}
+
+/* FOLD: what goes over the top comes back down; BIAS leans it to one side */
+static void fx_fold(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    int32_t g8 = (4096 + a * 226) >> 4, bias = (b - 64) * 380;
+    uint32_t i, ch;
+    for (ch = 0; ch < 2u; ch++) {
+        int32_t *x = ch ? r : l;
+        for (i = 0; i < n; i++) {
+            int32_t d = BUS(x[i]), t = ((d * g8) >> 8) + bias;
+            uint32_t g = 12;
+            t = clampi(t, -400000, 400000);
+            while ((t > 30000 || t < -30000) && g--)
+                t = t > 0 ? 60000 - t : -60000 - t;
+            x[i] = MIXIN(d, ((t - bias / 2) * 22000) >> 15, c);
         }
     }
 }
 
-static void fx_chorus(int32_t *l, int32_t *r, uint32_t n)
+/* CRUSH: fewer bits, fewer frames */
+static void fx_crush(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
 {
-    int32_t mix = PV(CHO_MIX) * 200, depth = PV(CHO_DEPTH);      /* the wet up to 0.78 */
-    uint32_t i, w = fx.cho_w, ph = fx.cho_ph;
-    if (!mix) {
-        if (fx.cho_w != 0xFFFFFFFFu) {          /* off: its memory cleared once, so it starts clean */
-            for (i = 0; i < CHO_N; i++)
-                cho_l[i] = cho_r[i] = 0;
-            fx.cho_w = 0xFFFFFFFFu;
-        }
-        return;
-    }
-    if (w == 0xFFFFFFFFu)
-        w = 0;
+    uint32_t bits = (uint32_t)(a * 13) >> 7, hold = 1u + (uint32_t)b / 4u, k = fx.crush_n, i;
+    int32_t hl = fx.crush[0], hr = fx.crush[1];
     for (i = 0; i < n; i++) {
-        int32_t tl, tr, dl, dr, a, wl, wr;
+        int32_t dl = BUS(l[i]), dr = BUS(r[i]);
+        if (!k) {
+            hl = (clampi(dl, -32767, 32767) >> bits) * (1 << bits);
+            hr = (clampi(dr, -32767, 32767) >> bits) * (1 << bits);
+            k = hold;
+        }
+        k--;
+        l[i] = MIXIN(dl, hl, c);
+        r[i] = MIXIN(dr, hr, c);
+    }
+    fx.crush[0] = hl;
+    fx.crush[1] = hr;
+    fx.crush_n = k;
+}
+
+/* COMP: what is over the threshold is let through at a quarter; the level lost is given back */
+static void fx_comp(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    int32_t T = 22000 - a * 150, rel = 2 + ((127 - b) * (127 - b)) / 200, env = fx.cmp_env, g = fx.cmp_g, to, dg;
+    int32_t make = (22000 << 10) / (T + ((22000 - T) >> 2));    /* Q10 */
+    uint32_t i;
+    if (!g)
+        g = 1024 << 8;
+    to = env > T ? (int32_t)((((uint32_t)(T + ((env - T) >> 2))) << 10) / (uint32_t)env) : 1024;
+    to = ((to * make) >> 10) << 8;
+    dg = per_frame(to - g, n);
+    for (i = 0; i < n; i++) {
+        int32_t dl = BUS(l[i]), dr = BUS(r[i]), pk = dl < 0 ? -dl : dl, q = dr < 0 ? -dr : dr;
+        if (q > pk)
+            pk = q;
+        if (pk > env)
+            env += (pk - env) >> 3;
+        else
+            env -= (env >> 8) * rel >> 8;
+        g += dg;
+        l[i] = MIXIN(dl, (dl * (g >> 8)) >> 10, c);
+        r[i] = MIXIN(dr, (dr * (g >> 8)) >> 10, c);
+    }
+    fx.cmp_env = env;
+    fx.cmp_g = to;
+}
+
+/* EQ: three bands (under 200 Hz, over 3.5 kHz, and between), each from -12 to +12 dB */
+static void fx_eq(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+#define EQ_G(v) ((v) >= 64 ? 256 + ((v) - 64) * 12 : 64 + (v) * 3)      /* Q8: 0.25 .. 1 .. 4 */
+    int32_t gl = EQ_G(a), gm = EQ_G(b), gh = EQ_G(c);
+    uint32_t i, ch;
+    for (ch = 0; ch < 2u; ch++) {
+        int32_t *x = ch ? r : l, lo = fx.eq_lo[ch], hi = fx.eq_hi[ch];
+        for (i = 0; i < n; i++) {
+            int32_t d = BUS(x[i]) * 16;         /* (16 times finer: the low band's slow filter needs it) */
+            lo += mulh(d - lo, 61200000) * 2;   /* 200 Hz */
+            hi += mulh(d - hi, 843000000) * 2;  /* 3.5 kHz */
+            x[i] = (((lo >> 4) * gl) + (((hi - lo) >> 4) * gm) + (((d - hi) >> 4) * gh)) >> 8;
+        }
+        fx.eq_lo[ch] = lo;
+        fx.eq_hi[ch] = hi;
+    }
+}
+
+/* FILTER: one for the whole sound; LP>HP goes from low-pass by band-pass to high-pass */
+static void fx_filter(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    fcoef_t f;
+    int32_t k29, wa, wb;
+    uint32_t i, ch;
+    fx.flt_cut += ((16 * 256 + a * 240) - fx.flt_cut) >> 2;
+    filter_coef(&f, fx.flt_cut, 131072 - b * 1011);
+    k29 = f.k << 13;
+    wa = c < 64 ? c * 2 : (c - 64) * 2;         /* 0..127: from the first of the pair to the second */
+    wb = c < 64;
+    for (ch = 0; ch < 2u; ch++) {
+        int32_t *x = ch ? r : l, ic1 = fx.flt_ic[ch][0], ic2 = fx.flt_ic[ch][1];
+        for (i = 0; i < n; i++) {
+            int32_t v0 = BUS(x[i]) * 16, v3 = v0 - ic2, v1, v2, bp, y;
+            v1 = (mulh(f.a1, ic1) + mulh(f.a2, v3)) * 4;
+            v2 = ic2 + (mulh(f.a2, ic1) + mulh(f.a3, v3)) * 4;
+            ic1 = 2 * v1 - ic1;
+            ic2 = 2 * v2 - ic2;
+            bp = mulh(k29, v1) * 8;
+            y = wb ? v2 + (((bp - v2) >> 7) * wa) : bp + (((v0 - bp - v2 - bp) >> 7) * wa);
+            x[i] = y >> 4;
+        }
+        fx.flt_ic[ch][0] = clampi(ic1, -(1 << 29), 1 << 29);
+        fx.flt_ic[ch][1] = clampi(ic2, -(1 << 29), 1 << 29);
+    }
+}
+
+/* PHASER: four all-passes swept between 200 Hz and 4 kHz, the right side a quarter turn behind */
+static void fx_phaser(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    uint32_t i, ch, k;
+    int32_t fb = b * 230;
+    fx.pha_ph += (uint32_t)(4000 + a * a * 28) * n;             /* 0.04 .. 4.6 Hz */
+    for (ch = 0; ch < 2u; ch++) {
+        int32_t *x = ch ? r : l, last = fx.pha_fb[ch], *px = fx.pha_x[ch], *py = fx.pha_y[ch], cf;
+        int32_t pitch = 55 * 256 + ((tri16(fx.pha_ph + (ch ? 0x40000000u : 0u)) * 52) >> 8);   /* 200 Hz .. 4 kHz */
+        uint32_t ix = (uint32_t)(pitch - 2048) >> 7, g = AP_GTAB[ix] >> 8;                    /* tan, Q16 */
+        cf = (int32_t)(((65536u - g) * 16384u) / ((65536u + g) >> 1));                         /* (1-g)/(1+g), Q15 */
+        cf = (cf > 32767 ? 32767 : cf) * 65536;
+        for (i = 0; i < n; i++) {
+            int32_t d = BUS(x[i]), y = d + (((last >> 3) * fb) >> 12);
+            for (k = 0; k < 4u; k++) {
+                int32_t o = px[k] + mulh(py[k] - y, cf) * 2;
+                px[k] = y;
+                py[k] = o;
+                y = o;
+            }
+            last = clampi(y, -200000, 200000);
+            x[i] = MIXIN(d, last, c);
+        }
+        fx.pha_fb[ch] = last;
+    }
+}
+
+/* FLANGER: a very short echo, its time swept from 1 to 7 ms, fed back */
+static void fx_flanger(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    uint32_t i, w = fx.fla_w, ph = fx.fla_ph;
+    int32_t fb = b * 240, fl = fx.fla_fb[0], fr = fx.fla_fb[1];
+    for (i = 0; i < n; i++) {
+        int32_t dl = BUS(l[i]), dr = BUS(r[i]), d1, d2, p, q, s;
+        ph += 2000u + (uint32_t)(a * a) * 30u;  /* 0.02 .. 5 Hz */
+        d1 = (44 << 8) + ((tri16(ph) * 266) >> 8);              /* frames Q8 */
+        d2 = (44 << 8) + ((tri16(ph + 0x30000000u) * 266) >> 8);
+        fla_l[w] = sat16((dl >> 2) + (((fl >> 2) * fb) >> 15));         /* (its memory holds a quarter of the level) */
+        fla_r[w] = sat16((dr >> 2) + (((fr >> 2) * fb) >> 15));
+        p = (int32_t)((w - (uint32_t)(d1 >> 8)) & (FLA_N - 1u));
+        q = (int32_t)((uint32_t)(p - 1) & (FLA_N - 1u));
+        s = fla_l[p];
+        fl = (s + (((fla_l[q] - s) * (d1 & 255)) >> 8)) * 4;
+        p = (int32_t)((w - (uint32_t)(d2 >> 8)) & (FLA_N - 1u));
+        q = (int32_t)((uint32_t)(p - 1) & (FLA_N - 1u));
+        s = fla_r[p];
+        fr = (s + (((fla_r[q] - s) * (d2 & 255)) >> 8)) * 4;
+        l[i] = dl + (((fl - (dl >> 1)) * c) >> 7);
+        r[i] = dr + (((fr - (dr >> 1)) * c) >> 7);
+        w = (w + 1u) & (FLA_N - 1u);
+    }
+    fx.fla_w = w;
+    fx.fla_ph = ph;
+    fx.fla_fb[0] = fl;
+    fx.fla_fb[1] = fr;
+}
+
+/* CHORUS: 9 ms away, moving by up to 6 ms, the two sides a quarter turn apart */
+static void fx_chorus(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    uint32_t i, w = fx.cho_w, ph = fx.cho_ph;
+    for (i = 0; i < n; i++) {
+        int32_t dl = BUS(l[i]), dr = BUS(r[i]), d1, d2, s, wl, wr;
         uint32_t p;
-        ph += 58000u + (uint32_t)depth * 300u;  /* 0.6 .. 1 Hz */
-        tl = (int32_t)(ph >> 15) - 65536;       /* two triangles a quarter apart, 0..65535 */
-        tl = tl < 0 ? -tl : tl;
-        tr = (int32_t)((ph + 0x40000000u) >> 15) - 65536;
-        tr = tr < 0 ? -tr : tr;
-        dl = (400 << 8) + ((tl * depth) >> 7);  /* 9 ms + up to 5.8 ms, frames Q8 */
-        dr = (400 << 8) + ((tr * depth) >> 7);
-        cho_l[w] = sat16(l[i]);
-        cho_r[w] = sat16(r[i]);
-        p = (w - (uint32_t)(dl >> 8)) & (CHO_N - 1u);
-        a = cho_l[p];
-        wl = a + (((cho_l[(p - 1u) & (CHO_N - 1u)] - a) * (dl & 255)) >> 8);
-        p = (w - (uint32_t)(dr >> 8)) & (CHO_N - 1u);
-        a = cho_r[p];
-        wr = a + (((cho_r[(p - 1u) & (CHO_N - 1u)] - a) * (dr & 255)) >> 8);
-        l[i] += ((wl - (l[i] >> 1)) * mix) >> 15;       /* (and a little less of the dry: the level stays) */
-        r[i] += ((wr - (r[i] >> 1)) * mix) >> 15;
+        ph += 20000u + (uint32_t)a * 1500u;     /* 0.2 .. 2.2 Hz */
+        d1 = (400 << 8) + ((tri16(ph) * b) >> 7);
+        d2 = (400 << 8) + ((tri16(ph + 0x40000000u) * b) >> 7);
+        cho_l[w] = sat16(dl >> 2);
+        cho_r[w] = sat16(dr >> 2);
+        p = (w - (uint32_t)(d1 >> 8)) & (CHO_N - 1u);
+        s = cho_l[p];
+        wl = (s + (((cho_l[(p - 1u) & (CHO_N - 1u)] - s) * (d1 & 255)) >> 8)) * 4;
+        p = (w - (uint32_t)(d2 >> 8)) & (CHO_N - 1u);
+        s = cho_r[p];
+        wr = (s + (((cho_r[(p - 1u) & (CHO_N - 1u)] - s) * (d2 & 255)) >> 8)) * 4;
+        l[i] = dl + ((((wl - (dl >> 1)) >> 4) * c * 100) >> 10);        /* (a little less of the dry: the level stays) */
+        r[i] = dr + ((((wr - (dr >> 1)) >> 4) * c * 100) >> 10);
         w = (w + 1u) & (CHO_N - 1u);
     }
     fx.cho_w = w;
     fx.cho_ph = ph;
 }
 
-/* the echo: left, then right, then left again. Its memory runs at half the sample rate (a darker echo, twice the
- * time): two frames in are one frame kept, one frame read is two frames out */
-static void fx_delay(int32_t *l, int32_t *r, uint32_t n)
+/* DIMENS: two slow, opposite movements, each side taking a little of the other's the wrong way up: width without
+ * the wobble of a chorus */
+static void fx_dimens(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
 {
-    int32_t mix = PV(DLY_MIX) * 258, fb = PV(DLY_FB) * 240, tone = 4000 + PV(DLY_TONE) * 226, d = fx.dly_d;
-    int32_t to, lpl = fx.dly_lp[0], lpr = fx.dly_lp[1];
-    uint32_t i, w = fx.dly_w;
-    uint64_t t = ((uint64_t)DIV_TICKS[PV(DLY_TIME)] * clk_spt) >> 17;   /* half-rate frames */
-    if (!mix) {
-        if (w != 0xFFFFFFFFu) {
-            for (i = 0; i < DLY_N; i++)
-                dly_l[i] = dly_r[i] = 0;
-            fx.dly_w = 0xFFFFFFFFu;
-            fx.dly_lp[0] = fx.dly_lp[1] = 0;
-            fx.dly_in = fx.dly_ol = fx.dly_or = fx.dly_pl = fx.dly_pr = 0;
-            fx.dly_odd = 0;
-        }
-        return;
+    uint32_t i, w = fx.dim_w, ph = fx.dim_ph;
+    int32_t base = (220 + a * 3) << 8;          /* 5 .. 13.6 ms */
+    for (i = 0; i < n; i++) {
+        int32_t dl = BUS(l[i]), dr = BUS(r[i]), t = (tri16(ph) - 32768) * b, d1 = base + (t >> 7), d2 = base - (t >> 7);
+        int32_t s, wl, wr;
+        uint32_t p;
+        ph += 24000u;                           /* 0.25 Hz */
+        dim_l[w] = sat16(dl >> 2);
+        dim_r[w] = sat16(dr >> 2);
+        p = (w - (uint32_t)(d1 >> 8)) & (DIM_N - 1u);
+        s = dim_l[p];
+        wl = (s + (((dim_l[(p - 1u) & (DIM_N - 1u)] - s) * (d1 & 255)) >> 8)) * 4;
+        p = (w - (uint32_t)(d2 >> 8)) & (DIM_N - 1u);
+        s = dim_r[p];
+        wr = (s + (((dim_r[(p - 1u) & (DIM_N - 1u)] - s) * (d2 & 255)) >> 8)) * 4;
+        l[i] = dl + (((wl - (wr >> 1) - (dl >> 2)) * c) >> 7);
+        r[i] = dr + (((wr - (wl >> 1) - (dr >> 2)) * c) >> 7);
+        w = (w + 1u) & (DIM_N - 1u);
     }
+    fx.dim_w = w;
+    fx.dim_ph = ph;
+}
+
+/* TREMOLO: the level moves; with PAN the two sides move apart, up to opposite */
+static void fx_trem(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    uint32_t i, ph = fx.trm_ph, inc = 48000u + (uint32_t)(a * a) * 105u, off = (uint32_t)c << 24;   /* 0.5 .. 18 Hz */
+    for (i = 0; i < n; i++) {
+        int32_t gl, gr;
+        ph += inc;
+        gl = 4096 - ((b * (32767 - sinr[ph >> 22])) >> 11);     /* Q12, down to 1 - depth */
+        gr = 4096 - ((b * (32767 - sinr[(ph + off) >> 22])) >> 11);
+        l[i] = (BUS(l[i]) * gl) >> 12;
+        r[i] = (BUS(r[i]) * gr) >> 12;
+    }
+    fx.trm_ph = ph;
+}
+
+/* PUMP: the level ducks on the beat and comes back, as a compressor keyed by a kick would do it */
+static void fx_pump(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    uint32_t per = (uint32_t)(((uint64_t)DIV_TICKS[(a * 12) >> 7] * clk_spt) >> 16), inc = 0xFFFFFFFFu / (per ? per : 1u);
+    uint32_t i, ph = fx.pmp_ph;
+    int32_t g = fx.pmp_g ? fx.pmp_g : 4096 << 4;
+    for (i = 0; i < n; i++) {
+        int32_t e, to;
+        ph += inc;
+        e = 4095 - (int32_t)(ph >> 20);         /* 1 at the beat, down to 0 before the next */
+        e += ((((e * e) >> 12) - e) * c) >> 7;  /* CURVE: back sooner */
+        to = (4096 - ((b * e) >> 7)) << 4;
+        g += (to - g) >> 5;                     /* (no click when it drops) */
+        l[i] = (BUS(l[i]) * (g >> 4)) >> 12;
+        r[i] = (BUS(r[i]) * (g >> 4)) >> 12;
+    }
+    fx.pmp_ph = ph;
+    fx.pmp_g = g;
+}
+
+/* DELAY: left, then right, then left again, in time with the tempo. Its memory runs at half the sample rate (a
+ * darker echo, twice the time): two frames in are one frame kept, one frame read is two frames out */
+static void fx_delay(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
+{
+    int32_t fb = b * 240, tone = 24000, d = fx.dly_d, to, lpl = fx.dly_lp[0], lpr = fx.dly_lp[1];
+    uint32_t i, w = fx.dly_w;
+    uint64_t t = ((uint64_t)DIV_TICKS[(a * 12) >> 7] * clk_spt) >> 17;   /* half-rate frames */
     while (t > DLY_N - 4u)                      /* longer than its memory: half, and half again */
         t >>= 1;
     to = (int32_t)t << 8;
-    if (w == 0xFFFFFFFFu) {
-        w = 0;
+    if (!d)
         d = to;
-    }
     for (i = 0; i < n; i++) {
-        int32_t in = (l[i] + r[i]) >> 1;
+        int32_t dl = BUS(l[i]), dr = BUS(r[i]), in = (dl + dr) >> 1;
         if (fx.dly_odd) {
-            int32_t a, b, rl, rr, p, q;
+            int32_t x, y, rl, rr, p, q;
             d += (to - d) >> 10;                /* a new time: it slides there, as a tape would */
             p = (int32_t)w - (d >> 8);
             if (p < 0)
                 p += (int32_t)DLY_N;
             q = p ? p - 1 : (int32_t)DLY_N - 1;
-            a = dly_l[p];
-            b = dly_l[q];
-            rl = a + (((b - a) * (d & 255)) >> 8);
-            a = dly_r[p];
-            b = dly_r[q];
-            rr = a + (((b - a) * (d & 255)) >> 8);
+            x = dly_l[p];
+            y = dly_l[q];
+            rl = x + (((y - x) * (d & 255)) >> 8);              /* (its memory holds a quarter of the level) */
+            x = dly_r[p];
+            y = dly_r[q];
+            rr = x + (((y - x) * (d & 255)) >> 8);
             lpl += ((rl - lpl) * tone) >> 15;
             lpr += ((rr - lpr) * tone) >> 15;
-            dly_l[w] = sat16(((fx.dly_in + in) >> 1) + ((lpr * fb) >> 15));
+            dly_l[w] = sat16(((fx.dly_in + in) >> 3) + ((lpr * fb) >> 15));
             dly_r[w] = sat16(lpl);
             if (++w >= DLY_N)
                 w = 0;
@@ -167,12 +364,12 @@ static void fx_delay(int32_t *l, int32_t *r, uint32_t n)
             fx.dly_pr = fx.dly_or;
             fx.dly_ol = rl;
             fx.dly_or = rr;
-            l[i] += (((fx.dly_pl + rl) >> 1) * mix) >> 15;      /* halfway to the new frame, then the frame */
-            r[i] += (((fx.dly_pr + rr) >> 1) * mix) >> 15;
+            l[i] = dl + ((((fx.dly_pl + rl) >> 1) * c) >> 5);           /* halfway to the new frame, then the frame */
+            r[i] = dr + ((((fx.dly_pr + rr) >> 1) * c) >> 5);
         } else {
             fx.dly_in = in;
-            l[i] += (fx.dly_ol * mix) >> 15;
-            r[i] += (fx.dly_or * mix) >> 15;
+            l[i] = dl + ((fx.dly_ol * c) >> 5);
+            r[i] = dr + ((fx.dly_or * c) >> 5);
         }
         fx.dly_odd ^= 1u;
     }
@@ -182,33 +379,14 @@ static void fx_delay(int32_t *l, int32_t *r, uint32_t n)
     fx.dly_lp[1] = lpr;
 }
 
-/* the reverb: four all-passes smear the input, then four lines feed one another, a little duller each time
- * round. Like the echo it runs at half the sample rate */
-static void fx_reverb(int32_t *l, int32_t *r, uint32_t n)
+/* REVERB: four all-passes smear the input, then four lines feed one another, a little duller each time round.
+ * Like the echo it runs at half the sample rate */
+static void fx_reverb(int32_t *l, int32_t *r, uint32_t n, int32_t a, int32_t b, int32_t c)
 {
-    int32_t mix = PV(REV_MIX) * 200, g = 19660 + PV(REV_DECAY) * 96, damp = 32000 - PV(REV_DAMP) * 200;
-    uint32_t i, k;
-    if (!mix) {
-        if (fx.rv_w[0] != 0xFFFFFFFFu) {
-            for (k = 0; k < 4u; k++) {
-                for (i = 0; i < 192u; i++)
-                    ap_buf[k][i] = 0;
-                for (i = 0; i < 1104u; i++)
-                    rv_buf[k][i] = 0;
-                fx.rv_lp[k] = 0;
-                fx.ap_w[k] = 0;
-                fx.rv_w[k] = 0;
-            }
-            fx.rv_w[0] = 0xFFFFFFFFu;
-            fx.rv_in = fx.rv_ol = fx.rv_or = 0;
-            fx.rv_odd = 0;
-        }
-        return;
-    }
-    if (fx.rv_w[0] == 0xFFFFFFFFu)
-        fx.rv_w[0] = 0;
+    int32_t mix = c * 200, g = 19660 + a * 96, damp = 32000 - b * 200;
+    uint32_t i;
     for (i = 0; i < n; i++) {
-        int32_t in = (l[i] + r[i]) >> 2;
+        int32_t dl = BUS(l[i]), dr = BUS(r[i]), in = (dl + dr) >> 4;    /* (a quarter: four voices of headroom) */
         if (fx.rv_odd) {
             int32_t x = (fx.rv_in + in) >> 1, d0, d1, d2, d3, s, f, ol, or_;
 #define RV_AP(K) { \
@@ -220,7 +398,7 @@ static void fx_reverb(int32_t *l, int32_t *r, uint32_t n)
             }
 #define RV_LINE(K, D) { \
                 uint32_t w_ = fx.rv_w[K]; \
-                f = (((D) - s) * g) >> 15; \
+                f = (((D) - s) * (g >> 1)) >> 14; \
                 fx.rv_lp[K] += ((f - fx.rv_lp[K]) * damp) >> 15; \
                 rv_buf[K][w_] = sat16(x + fx.rv_lp[K]); \
                 fx.rv_w[K] = w_ + 1u >= RV_LEN[K] ? 0u : w_ + 1u; \
@@ -234,17 +412,98 @@ static void fx_reverb(int32_t *l, int32_t *r, uint32_t n)
             RV_LINE(0, d0) RV_LINE(1, d1) RV_LINE(2, d2) RV_LINE(3, d3)
             ol = d0 - d2;
             or_ = d1 - d3;
-            l[i] += (((fx.rv_ol + ol) >> 1) * mix) >> 15;       /* halfway to the new frame, then the frame */
-            r[i] += (((fx.rv_or + or_) >> 1) * mix) >> 15;
+            l[i] = dl + ((((fx.rv_ol + ol) >> 1) * mix) >> 13);         /* halfway to the new frame, then the frame */
+            r[i] = dr + ((((fx.rv_or + or_) >> 1) * mix) >> 13);
             fx.rv_ol = ol;
             fx.rv_or = or_;
         } else {
             fx.rv_in = in;
-            l[i] += (fx.rv_ol * mix) >> 15;
-            r[i] += (fx.rv_or * mix) >> 15;
+            l[i] = dl + ((fx.rv_ol * mix) >> 13);
+            r[i] = dr + ((fx.rv_or * mix) >> 13);
         }
         fx.rv_odd ^= 1u;
     }
+}
+
+/* an effect no slot holds any more: its memory is cleared, so that it starts clean next time */
+static void fx_clear(uint32_t t)
+{
+    uint32_t i, k;
+    switch (t) {
+    case FX_DRIVE: fx.drv_lp[0] = fx.drv_lp[1] = 0; break;
+    case FX_COMP: fx.cmp_env = fx.cmp_g = 0; break;
+    case FX_EQ: fx.eq_lo[0] = fx.eq_lo[1] = fx.eq_hi[0] = fx.eq_hi[1] = 0; break;
+    case FX_FILTER: fx.flt_ic[0][0] = fx.flt_ic[0][1] = fx.flt_ic[1][0] = fx.flt_ic[1][1] = 0; break;
+    case FX_PHASER:
+        for (i = 0; i < 4u; i++)
+            fx.pha_x[0][i] = fx.pha_x[1][i] = fx.pha_y[0][i] = fx.pha_y[1][i] = 0;
+        fx.pha_fb[0] = fx.pha_fb[1] = 0;
+        break;
+    case FX_FLANGER:
+        for (i = 0; i < FLA_N; i++)
+            fla_l[i] = fla_r[i] = 0;
+        fx.fla_fb[0] = fx.fla_fb[1] = 0;
+        break;
+    case FX_CHORUS:
+        for (i = 0; i < CHO_N; i++)
+            cho_l[i] = cho_r[i] = 0;
+        break;
+    case FX_DIMENS:
+        for (i = 0; i < DIM_N; i++)
+            dim_l[i] = dim_r[i] = 0;
+        break;
+    case FX_PUMP: fx.pmp_g = 0; break;
+    case FX_DELAY:
+        for (i = 0; i < DLY_N; i++)
+            dly_l[i] = dly_r[i] = 0;
+        fx.dly_d = fx.dly_lp[0] = fx.dly_lp[1] = fx.dly_in = fx.dly_ol = fx.dly_or = fx.dly_pl = fx.dly_pr = 0;
+        break;
+    case FX_REVERB:
+        for (k = 0; k < 4u; k++) {
+            for (i = 0; i < 192u; i++)
+                ap_buf[k][i] = 0;
+            for (i = 0; i < 1104u; i++)
+                rv_buf[k][i] = 0;
+            fx.rv_lp[k] = 0;
+        }
+        fx.rv_in = fx.rv_ol = fx.rv_or = 0;
+        break;
+    default: break;
+    }
+}
+
+static void fx_run(int32_t *l, int32_t *r, uint32_t n)
+{
+    uint32_t s, seen = 0, gone, t;
+    for (s = 0; s < NFX; s++) {
+        const uint8_t *q = &cur.p[P_FX1_TYPE + 4u * s];
+        int32_t a = q[1], b = q[2], c = q[3];
+        t = q[0];
+        if (!t || t >= NFXT || (seen >> t & 1u))
+            continue;
+        seen |= 1u << t;
+        switch (t) {
+        case FX_DRIVE: fx_drive(l, r, n, a, b, c); break;
+        case FX_FOLD: fx_fold(l, r, n, a, b, c); break;
+        case FX_CRUSH: fx_crush(l, r, n, a, b, c); break;
+        case FX_COMP: fx_comp(l, r, n, a, b, c); break;
+        case FX_EQ: fx_eq(l, r, n, a, b, c); break;
+        case FX_FILTER: fx_filter(l, r, n, a, b, c); break;
+        case FX_PHASER: fx_phaser(l, r, n, a, b, c); break;
+        case FX_FLANGER: fx_flanger(l, r, n, a, b, c); break;
+        case FX_CHORUS: fx_chorus(l, r, n, a, b, c); break;
+        case FX_DIMENS: fx_dimens(l, r, n, a, b, c); break;
+        case FX_TREM: fx_trem(l, r, n, a, b, c); break;
+        case FX_PUMP: fx_pump(l, r, n, a, b, c); break;
+        case FX_DELAY: fx_delay(l, r, n, a, b, c); break;
+        default: fx_reverb(l, r, n, a, b, c); break;
+        }
+    }
+    gone = fx.live & ~seen;
+    for (t = 1; gone && t < NFXT; t++)
+        if (gone >> t & 1u)
+            fx_clear(t);
+    fx.live = seen;
 }
 
 /* ---- the way out: nothing under 13 Hz (a warp can leave a wave off centre), then a limiter that sees a tick
@@ -313,14 +572,6 @@ static void master_run(int32_t *l, int32_t *r, int32_t *out, uint32_t n)
     }
     mst.g = to;
     mst.pos = pos;
-}
-
-static void fx_run(int32_t *l, int32_t *r, uint32_t n)
-{
-    fx_drive(l, r, n);
-    fx_chorus(l, r, n);
-    fx_delay(l, r, n);
-    fx_reverb(l, r, n);
 }
 
 #endif

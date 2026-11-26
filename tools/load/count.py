@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Hugo Gilbert
 """How many instructions a block of APLAT's sound takes, on a 32-bit RISC-V stand-in (rv32im, clang -O2), run in
 Unicorn. fm1-emu charges one instruction per cycle of 240 MHz: a block of 256 frames has 5.8 ms, 1 392 000 of them,
 and fm1-dock's rule is to stay under half. The FM-1's chip is another instruction set and has a flash cache, so this
@@ -75,10 +76,11 @@ def params():
     env = re.findall(r"X\(e##_(\w+),", src)
     lfo = re.findall(r"X\(l##_(\w+),", src)
     mod = re.findall(r"X\(m##_(\w+),", src)
+    fxp = re.findall(r"X\(f##_(\w+),", src)
     ids = []
-    for m in re.finditer(r"AP_(OSC|ENV|LFO|MOD)\(X, (\w+)\)|X\((\w+),", body):
+    for m in re.finditer(r"AP_(OSC|ENV|LFO|MOD|FX)\(X, (\w+)\)|X\((\w+),", body):
         if m.group(1):
-            ids += [f"{m.group(2)}_{x}" for x in {"OSC": osc, "ENV": env, "LFO": lfo, "MOD": mod}[m.group(1)]]
+            ids += [f"{m.group(2)}_{x}" for x in {"OSC": osc, "ENV": env, "LFO": lfo, "MOD": mod, "FX": fxp}[m.group(1)]]
         else:
             ids.append(m.group(3))
     return {n: i for i, n in enumerate(ids)}
@@ -89,7 +91,7 @@ def main():
     P = params()
     m = Machine(sym)
     m.call("x_init")
-    assert m.call("x_np") >= 0 and len(P) == 116, len(P)
+    assert m.call("x_np") >= 0 and len(P) == 132, len(P)
     fac = re.findall(r'\{"([^"]+)", FS_', (ROOT / "aplat" / "ap_def.h").read_text())
 
     def play(label, preset, keys, sets=(), blocks=40):
@@ -113,13 +115,27 @@ def main():
     play("nothing sounds, no effect", 0, ())
     play("INIT, 1 note", 0, (60,))
     play("INIT, 8 notes (one oscillator each)", 0, chord8)
-    play("INIT, 8 notes, LP 24", 0, chord8, (("F_TYPE", 2),))
-    play("INIT, 8 notes + chorus + echo + reverb", 0, chord8, (("CHO_MIX", 60), ("DLY_MIX", 60), ("REV_MIX", 60)))
+    FT = dict(LP24=4, LPHOT=5, VOWEL=16, COMB=17)
+    FXT = dict(DRIVE=1, FOLD=2, CRUSH=3, COMP=4, EQ=5, FILTER=6, PHASER=7, FLANGER=8, CHORUS=9, DIMENS=10, TREM=11,
+               PUMP=12, DELAY=13, REVERB=14)
+
+    def rack(*names):
+        out = []
+        for i, nm in enumerate(names):
+            out += [(f"FX{i + 1}_TYPE", FXT[nm]), (f"FX{i + 1}_A", 60), (f"FX{i + 1}_B", 60), (f"FX{i + 1}_C", 80)]
+        return tuple(out)
+
+    play("INIT, 8 notes, LP 24", 0, chord8, (("F_TYPE", FT["LP24"]),))
+    play("INIT, 8 notes, VOWEL", 0, chord8, (("F_TYPE", FT["VOWEL"]),))
+    play("INIT, 8 notes, COMB +", 0, chord8, (("F_TYPE", FT["COMB"]), ("F_RES", 90)))
+    play("INIT, 8 notes + chorus + echo + reverb", 0, chord8, rack("CHORUS", "DELAY", "REVERB"))
+    play("INIT, 8 notes + the 7 heaviest effects", 0, chord8,
+         rack("PHASER", "DIMENS", "REVERB", "CHORUS", "FLANGER", "DELAY", "FILTER"))
     for name in ("SUPER STACK", "GLASS PAD", "STRINGS", "PWM PAD", "SLOW DRONE"):
         play(f"{name}, 8 keys held", fac.index(name), chord8)
     heavy = (("A_WMODE", 1), ("A_WARP", 90), ("B_WMODE", 5), ("B_WARP", 90), ("SUB_LVL", 80), ("NZ_LVL", 60),
-             ("F_TYPE", 2), ("F_DRV", 60), ("DRV_AMT", 50), ("CHO_MIX", 80), ("DLY_MIX", 80), ("REV_MIX", 80))
-    print("the heaviest sounds: SYNC and MIRROR, sub, noise, LP 24 with drive, every effect, 6 matrix slots, 8 keys held")
+             ("F_TYPE", FT["LPHOT"]), ("F_DRV", 60)) + rack("DRIVE", "PHASER", "CHORUS", "DIMENS", "COMP", "DELAY", "REVERB")
+    print("the heaviest sounds: SYNC and MIRROR, sub, noise, LP HOT with drive, seven effects, 6 matrix slots, 8 keys held")
     worst = 0
     for ua, ub in ((1, 1), (2, 2), (3, 1), (5, 3), (5, 5)):
         worst = max(worst, play(f"  unison {ua} + {ub}", fac.index("GLASS PAD"), chord8,

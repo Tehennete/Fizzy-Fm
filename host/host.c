@@ -1,12 +1,13 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (C) 2026 Hugo Gilbert */
 /* APLAT on a computer: the module (aplat/aplat.c) unchanged, on a stand-in for fm1-dock's host. A script plays
  * notes, turns knobs and presses buttons over time; out come the sound (WAV) and the screen (PPM) at the moments
  * the script asks. The screen is drawn with fm1-dock's own gfx.c and font.
  *
  *   cc -O2 -I$DOCK/firmware/dock -I$DOCK/firmware/src -I$DOCK/firmware/gen -o aplat_host host/host.c
  *   aplat_host OUT script.txt
- * Script lines: "T on KEY VEL", "T off KEY", "T btn ID", "T enc ID CLICKS", "T midi ST D1 D2", "T shot NAME",
- * "T end"; T in ms. */
+ * Script lines: "T on KEY VEL", "T off KEY", "T btn ID", "T enc ID CLICKS", "T midi ST D1 D2", "T nrpn NUMBER VALUE",
+ * "T shot NAME", "T end"; T in ms. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -100,7 +101,17 @@ static uint8_t store[240], bank[HB_BANK_MAX];
 static uint32_t store_n, bank_n;
 static int h_load(void *p, uint32_t n) { if (store_n != n) return -1; memcpy(p, store, n); return 0; }
 static void h_save(const void *p, uint32_t n) { if (n > 240u) { fprintf(stderr, "settings too big\n"); exit(2); } memcpy(store, p, n); store_n = n; printf("%6u ms  settings saved (%u B)\n", now_ms, n); }
-static void h_midi_send(uint32_t st, uint32_t d1, uint32_t d2) { printf("%6u ms  MIDI out %02X %u %u\n", now_ms, st, d1, d2); }
+/* what the module sends: an NRPN is printed as one line when its last part comes */
+static uint32_t out_p, out_v, out_count;
+static void h_midi_send(uint32_t st, uint32_t d1, uint32_t d2)
+{
+    out_count++;
+    if ((st & 0xF0u) == 0xB0u && d1 == 99u) out_p = d2 << 7;
+    else if ((st & 0xF0u) == 0xB0u && d1 == 98u) out_p |= d2;
+    else if ((st & 0xF0u) == 0xB0u && d1 == 6u) out_v = d2 << 7;
+    else if ((st & 0xF0u) == 0xB0u && d1 == 38u) printf("%6u ms  NRPN out %u = %u\n", now_ms, out_p, out_v | d2);
+    else printf("%6u ms  MIDI out %02X %u %u\n", now_ms, st, d1, d2);
+}
 static uint32_t h_master(void) { return 4096; }
 static void h_blit(int32_t x, int32_t y, int32_t w, int32_t h, const uint16_t *px) { lcd_blit((uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h, px); }
 static int32_t h_text_w(uint32_t big, const char *s) { return text_w(big ? &FONT_L : &FONT_S, s); }
@@ -113,12 +124,30 @@ static int h_bank_save(const void *p, uint32_t n)
     printf("%6u ms  bank saved (%u B)\n", now_ms, n);
     return 0;
 }
+static uint8_t bank1[HB_BANK_MAX];
+static uint32_t bank1_n;
+static int h_bank_load_n(uint32_t idx, void *p, uint32_t n)
+{
+    if (idx != 1u || !bank1_n) return -1;
+    memcpy(p, bank1, n < bank1_n ? n : bank1_n);
+    return (int)bank1_n;
+}
+static int h_bank_save_n(uint32_t idx, const void *p, uint32_t n)
+{
+    if (idx != 1u || n > HB_BANK_MAX) return -1;
+    memcpy(bank1, p, n);
+    bank1_n = n;
+    printf("%6u ms  bank 1 saved (%u B)\n", now_ms, n);
+    return 0;
+}
+static uint32_t h_bank_free(void) { return 7; }
 static hb_host_t host = {
     .abi = HB_ABI, .size = sizeof(hb_host_t), .ms = h_ms, .ticks = h_ticks, .log = h_log, .log_u32 = h_log_u32,
     .fill = h_fill, .text = h_text, .cv_begin = h_cv_begin, .cv_rect = h_cv_rect, .cv_line = h_cv_line,
     .cv_pixel = h_cv_pixel, .cv_text = h_cv_text, .cv_blit = h_cv_blit, .led = h_led, .rand = h_rand, .load = h_load,
     .save = h_save, .midi_send = h_midi_send, .master = h_master, .blit = h_blit, .text_w = h_text_w,
-    .bank_load = h_bank_load, .bank_save = h_bank_save,
+    .bank_load = h_bank_load, .bank_save = h_bank_save, .bank_load_n = h_bank_load_n, .bank_save_n = h_bank_save_n,
+    .bank_free = h_bank_free,
 };
 
 typedef struct { uint32_t t; char what[8]; int a, b, c; char name[64]; } hev_t;
@@ -177,6 +206,12 @@ int main(int argc, char **argv)
             else if (!strcmp(e->what, "btn")) { hb_module.ui(HB_EV_BTN_DOWN | (uint32_t)e->a, 0); hb_module.ui(HB_EV_BTN_UP | (uint32_t)e->a, 0); }
             else if (!strcmp(e->what, "enc")) hb_module.ui(HB_EV_ENC | (uint32_t)e->a, e->b);
             else if (!strcmp(e->what, "midi")) hb_module.midi((uint32_t)e->a, (uint32_t)e->b, (uint32_t)e->c);
+            else if (!strcmp(e->what, "nrpn")) {
+                hb_module.midi(0xB0, 99, (uint32_t)e->a >> 7);
+                hb_module.midi(0xB0, 98, (uint32_t)e->a & 127u);
+                hb_module.midi(0xB0, 6, (uint32_t)e->b >> 7);
+                hb_module.midi(0xB0, 38, (uint32_t)e->b & 127u);
+            }
             else if (!strcmp(e->what, "shot")) { for (i = 0; i < 40u; i++) hb_module.draw(0); shot(out, e->name); }
         }
         owed += 44118u;

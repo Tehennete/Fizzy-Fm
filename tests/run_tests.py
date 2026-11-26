@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Hugo Gilbert
 """APLAT's tests, on a computer: the module unchanged on host/host.c (fm1-dock's screen code under it), built with
 the address and undefined-behaviour sanitizers, played by scripts; the sound and the screens are then checked.
 
@@ -251,6 +252,160 @@ def t_unison_budget():
         fail("budget", "notes left hanging")
 
 
+def param_ids():
+    """the parameters' numbers by name, from the source (they are also their NRPN numbers)"""
+    src = (ROOT / "aplat" / "ap_def.h").read_text()
+    body = src.split("#define AP_PARAMS(X)")[1].split("#define X(id")[0]
+    subs = {k: re.findall(r"X\(%s##_(\w+)," % v, src) for k, v in (("OSC", "o"), ("ENV", "e"), ("LFO", "l"), ("MOD", "m"), ("FX", "f"))}
+    ids = []
+    for m in re.finditer(r"AP_(OSC|ENV|LFO|MOD|FX)\(X, (\w+)\)|X\((\w+),", body):
+        ids += [f"{m.group(2)}_{x}" for x in subs[m.group(1)]] if m.group(1) else [m.group(3)]
+    return {n: i for i, n in enumerate(ids)}
+
+
+P = param_ids()
+_def = (ROOT / "aplat" / "ap_def.h").read_text()
+FILTERS = re.findall(r'"([^"]+)"', re.search(r"LS_FTYPE\[\] = \{(.*?)\};", _def, re.S).group(1))
+EFFECTS = re.findall(r'"([^"]+)"', re.search(r"LS_FX\[\] = \{(.*?)\};", _def, re.S).group(1))
+
+
+def t_filters():
+    """every filter type on a chord, with resonance, SHAPE and a moving cutoff: it sounds, it stays in range, it ends"""
+    chord = (45, 52, 57, 60, 64)
+    for i, name in enumerate(FILTERS):
+        if not i:
+            continue
+        s = Script(f"filter_{i:02d}").preset(0)
+        for k, v in (("F_TYPE", i), ("F_CUT", 70), ("F_RES", 80), ("F_VAR", 50), ("F_ENV", 100), ("E2_D", 80), ("E2_S", 30),
+                     ("A_UNI", 1), ("A_SPR", 100)):
+            s.add(f"nrpn {P[k]} {v}")
+        s.wait(50)
+        t0 = s.t
+        for k in chord:
+            s.on(k, 110)
+        for j in range(20):                       # the cutoff swept by hand while it sounds
+            s.wait(60).add(f"nrpn {P['F_CUT']} {20 + j * 5}")
+        t1 = s.t
+        for k in chord:
+            s.off(k)
+        s.wait(3000)
+        d, out = s.run()
+        if d is None:
+            continue
+        x = seg(d, t0, t1)
+        print(f"  {i:2d} {name:8s} peak {np.abs(x).max():6.0f} rms {rms(x):6.0f}  tail {rms(seg(d, s.t - 200, s.t)):4.1f}")
+        if rms(x) < 150:
+            fail(f"filter {name}", f"nearly silent (rms {rms(x):.0f})")
+        if rms(seg(d, s.t - 200, s.t)) > 3:
+            fail(f"filter {name}", "it does not end")
+        if not np.isfinite(d).all() or np.abs(d).max() > 24001:
+            fail(f"filter {name}", "out of range")
+
+
+def t_effects():
+    """every effect alone in slot 1, its knobs where they start and then at both ends; then all of them in turn in
+    seven slots at once"""
+    chord = (48, 55, 60, 64)
+    def knobs(s, slot, t, a=None, b=None, c=None):
+        s.add(f"nrpn {P[f'FX{slot}_TYPE']} {t}")
+        for nm, v in (("A", a), ("B", b), ("C", c)):
+            if v is not None:
+                s.add(f"nrpn {P[f'FX{slot}_{nm}']} {v}")
+    base = None
+    for i, name in enumerate(EFFECTS):
+        s = Script(f"fx_{i:02d}").preset(0)
+        if i:
+            s.btn("FX").enc(K1, i)                # picked on the panel: its knobs take their usual places
+        s.wait(50)
+        t0 = s.t
+        for k in chord:
+            s.on(k, 110)
+        s.wait(900)
+        if i:
+            for a, b, c in ((0, 0, 127), (127, 127, 127), (127, 0, 64), (0, 127, 0)):
+                knobs(s, 1, i, a, b, c)
+                s.wait(300)
+        for k in chord:
+            s.off(k)
+        s.wait(9000)
+        d, out = s.run()
+        if d is None:
+            continue
+        x = seg(d, t0 + 100, t0 + 900)
+        if base is None:
+            base = x.copy()
+        diff = rms(x - base) / (rms(base) + 1e-9)
+        print(f"  {i:2d} {name:8s} rms {rms(x):6.0f} peak {np.abs(d).max():6.0f}  differs from dry by {diff * 100:5.1f} %  "
+              f"tail {rms(seg(d, s.t - 200, s.t)):4.1f}")
+        if i and diff < 0.02 and name not in ("COMP", "EQ"):      # (at their starting places those two leave INIT as it is)
+            fail(f"effect {name}", "it changes nothing")
+        if rms(x) < 300:
+            fail(f"effect {name}", "nearly silent")
+        if rms(seg(d, s.t - 200, s.t)) > 3:
+            fail(f"effect {name}", "it does not end")
+        if np.abs(d).max() > 24001:
+            fail(f"effect {name}", "out of range")
+    s = Script("fx_all").preset(0)
+    for k in chord:
+        s.on(k, 110)
+    for rot in range(len(EFFECTS)):               # seven slots, the effects moving through them
+        for slot in range(1, 8):
+            knobs(s, slot, (rot + slot) % len(EFFECTS), 90, 90, 100)
+        s.wait(250)
+    for k in chord:
+        s.off(k)
+    s.wait(1000)
+    d, out = s.run()
+    if d is not None and np.abs(d).max() > 24001:
+        fail("effects", "out of range with seven at once")
+
+
+def t_link():
+    """the editor's link: everything asked for comes with the right sum; a parameter set by NRPN is set; a table of
+    one's own arrives whole, is kept, and plays"""
+    s = Script("link").preset(0)
+    s.add("nrpn 2000 0").wait(400)
+    s.add(f"nrpn {P['F_CUT']} 33").add(f"nrpn {P['X3_AMT']} 200").wait(20)
+    s.enc(K1, 1).wait(50)                         # a knob turned on the FM-1: the editor is told
+    rng = np.random.default_rng(5)
+    spec = np.zeros(1024, int)
+    for f in range(8):                            # a table: a saw that gets brighter
+        for h in range(64):
+            spec[(f * 64 + h) * 2] = int(9000 / (h + 1) ** (1.6 - 0.1 * f))
+    spec[5], spec[7] = -60, -50                   # (two values the module must move out of -64..-49)
+    s.add("nrpn 2003 1")
+    tot = 0
+    for v in spec:
+        u = int(v) & 0xFFFF
+        tot += u
+        s.add(f"nrpn {3000 + (u >> 14)} {u & 0x3FFF}")
+    s.add(f"nrpn 2005 {tot & 0x3FFF}").wait(100)
+    s.add("nrpn 2003 2").add("nrpn 3000 5").add("nrpn 2005 5").wait(50)       # a broken one: refused
+    s.add(f"nrpn {P['A_WAVE']} 65").wait(400)     # USER 2
+    t0 = s.t
+    s.on(57).wait(600).off(57).wait(2500)
+    d, out = s.run()
+    if d is None:
+        return
+    got = {int(a): int(b) for a, b in re.findall(r"NRPN out (\d+) = (\d+)", out.split("NRPN out 2011")[0])}
+    summ = re.search(r"NRPN out 2011 = (\d+)", out)
+    n_par = sum(1 for k in got if k < 132)
+    print(f"  everything: {n_par} parameters, the name {''.join(chr(got.get(1000 + i, 0) or 32) for i in range(12)).strip()!r}")
+    if n_par != 132 or not summ or int(summ.group(1)) != sum(v for k, v in got.items() if k < 132) & 0x3FFF:
+        fail("link", "the dump or its sum is wrong")
+    if "NRPN out 2012 = 1" not in out or "NRPN out 2012 = 0" not in out:
+        fail("link", "the tables' answers (one whole, one broken) are not both there")
+    if "bank 1 saved (6144 B)" not in out:
+        fail("link", "the table was not kept")
+    if f"NRPN out {P['M1']} = " not in out.split("NRPN out 2011")[1]:
+        fail("link", "a knob turned on the FM-1 was not sent")
+    x = seg(d, t0 + 100, t0 + 550)[:, 0]
+    f0 = pitch_of(x)
+    print(f"  the table of one's own plays: {f0:.1f} Hz, rms {rms(x):.0f}")
+    if abs(f0 - 220) > 2 or rms(x) < 300:
+        fail("link", "the user table does not play")
+
+
 def t_guard():
     """a pretend chip on which every note takes 15 % of a block: of 8 keys, notes must go until the blocks are on
     time again (5 notes are 75 %), and on a fast chip nothing may change"""
@@ -294,8 +449,7 @@ def t_arp():
     idx = FACTORY.index("ARP ECHO")
     for name, bpm in (("arp_tempo", None), ("arp_midi", 150)):
         s = Script(name).preset(idx)
-        s.btn("FX").enc(ENC_SELECT, 1).enc(K4, -127)      # the echo off, to count the notes
-        s.btn("FX").btn("FX").btn("FX").enc(ENC_SELECT, 0)
+        s.btn("FX").enc(K4, -127).enc(ENC_SELECT, 1).enc(K4, -127)      # the echo and the reverb off, to count the notes
         s.wait(50)
         if bpm:
             t, end = s.t, s.t + 5200
@@ -352,7 +506,7 @@ def t_save_compare():
     d, out = s.run()
     if d is None:
         return
-    if "bank saved (4096 B)" not in out:
+    if "bank saved (4608 B)" not in out:
         fail("save", "the user sounds were not written")
 
 
@@ -409,7 +563,8 @@ def t_fuzz(seed, rounds=60):
         fail(f"fuzz {seed}", "not a number")
 
 
-TESTS = {"tuning": t_tuning, "alias": t_alias, "factory": t_factory, "budget": t_unison_budget, "guard": t_guard,
+TESTS = {"tuning": t_tuning, "alias": t_alias, "factory": t_factory, "filters": t_filters, "effects": t_effects,
+         "link": t_link, "budget": t_unison_budget, "guard": t_guard,
          "legato": t_legato,
          "arp": t_arp, "pages": t_pages, "save": t_save_compare,
          "fuzz": lambda: [t_fuzz(seed) for seed in (1, 2, 3, 4)]}

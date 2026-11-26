@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (C) 2026 Hugo Gilbert */
 /* APLAT's screen and panel: flat blocks of colour, one colour per section.
  *   24..55    the header: the page on its colour, the sound's number and name
  *   56..143   the picture of what the page edits (a wave, the filter, an envelope ...)
@@ -42,7 +43,7 @@ static const page_t PAGES[] = {
     {"MIX", HB_BTN_EDIT, 1, K_MIX, DS_MIX, 0, {P_SUB_WAVE, P_SUB_OCT, P_SUB_LVL, P_SUB_DIR}},
     {"MIX", HB_BTN_EDIT, 0, K_MIX, DS_MIX, 0, {P_NZ_TYPE, P_NZ_LVL, P_VOL, P_VSPREAD}},
     {"FILTER", HB_BTN_SEL, 1, K_FILT, DS_FILT, 0, {P_F_TYPE, P_F_CUT, P_F_RES, P_F_ENV}},
-    {"FILTER", HB_BTN_SEL, 0, K_FILT, DS_FILT, 0, {P_F_KEY, P_F_DRV, P_F_VEL, P_F_LFO}},
+    {"FILTER", HB_BTN_SEL, 0, K_FILT, DS_FILT, 0, {P_F_KEY, P_F_DRV, P_F_VEL, P_F_VAR}},
     {"ENV 1 AMP", HB_BTN_ENV, 1, K_ENV, DS_ENV, P_E1_A, {P_E1_A, P_E1_D, P_E1_S, P_E1_R}},
     {"ENV 2", HB_BTN_ENV, 1, K_ENV, DS_ENV, P_E2_A, {P_E2_A, P_E2_D, P_E2_S, P_E2_R}},
     {"ENV 3", HB_BTN_ENV, 1, K_ENV, DS_ENV, P_E3_A, {P_E3_A, P_E3_D, P_E3_S, P_E3_R}},
@@ -52,9 +53,13 @@ static const page_t PAGES[] = {
     {"MATRIX", HB_BTN_SEQ, 1, K_MOD, DS_MOD, 0, {P_X1_SRC, P_X1_DST, P_X1_AMT, PG_SLOT}},
     {"ARP", HB_BTN_ARP, 1, K_ARP, DS_ARP, 0, {P_ARP_MODE, P_ARP_RATE, P_ARP_GATE, P_ARP_OCT}},
     {"ARP", HB_BTN_ARP, 0, K_ARP, DS_ARP, 0, {P_ARP_SWING, P_ARP_LATCH, P_TEMPO, NOP}},
-    {"DRIVE CHO", HB_BTN_FX, 1, K_FX, DS_FX, 0, {P_DRV_TYPE, P_DRV_AMT, P_CHO_DEPTH, P_CHO_MIX}},
-    {"DELAY", HB_BTN_FX, 1, K_FX, DS_FX, 2, {P_DLY_TIME, P_DLY_FB, P_DLY_TONE, P_DLY_MIX}},
-    {"REVERB", HB_BTN_FX, 1, K_FX, DS_FX, 3, {P_REV_DECAY, P_REV_DAMP, P_REV_MIX, NOP}},
+    {"FX", HB_BTN_FX, 1, K_FX, DS_FX, 0, {P_FX1_TYPE, P_FX1_A, P_FX1_B, P_FX1_C}},
+    {"FX", HB_BTN_FX, 0, K_FX, DS_FX, 1, {P_FX2_TYPE, P_FX2_A, P_FX2_B, P_FX2_C}},
+    {"FX", HB_BTN_FX, 0, K_FX, DS_FX, 2, {P_FX3_TYPE, P_FX3_A, P_FX3_B, P_FX3_C}},
+    {"FX", HB_BTN_FX, 0, K_FX, DS_FX, 3, {P_FX4_TYPE, P_FX4_A, P_FX4_B, P_FX4_C}},
+    {"FX", HB_BTN_FX, 0, K_FX, DS_FX, 4, {P_FX5_TYPE, P_FX5_A, P_FX5_B, P_FX5_C}},
+    {"FX", HB_BTN_FX, 0, K_FX, DS_FX, 5, {P_FX6_TYPE, P_FX6_A, P_FX6_B, P_FX6_C}},
+    {"FX", HB_BTN_FX, 0, K_FX, DS_FX, 6, {P_FX7_TYPE, P_FX7_A, P_FX7_B, P_FX7_C}},
     {"VOICE", HB_BTN_GLO, 1, K_VOICE, DS_VOICE, 0, {P_MODE, P_GLIDE, P_BEND, P_VELSENS}},
 };
 #define NPAGES (sizeof PAGES / sizeof PAGES[0])
@@ -107,6 +112,8 @@ static uint32_t same_s(const char *a, const char *b)
     return *a == *b;
 }
 
+static uint32_t is_bipolar(const pdef_t *d) { return d->fmt == F_NUM && d->aux > 0 && d->max == 2 * d->aux; }
+
 static uint32_t page_param(const page_t *pg, uint32_t k)
 {
     uint32_t id = pg->par[k];
@@ -115,19 +122,68 @@ static uint32_t page_param(const page_t *pg, uint32_t k)
     return id;
 }
 
-static uint32_t is_bipolar(const pdef_t *d) { return d->fmt == F_NUM && d->aux > 0 && d->max == 2 * d->aux; }
+/* an effect's knob: which of the three (0..2), -1 when id is not one; *type its effect */
+static int32_t fx_knob(uint32_t id, uint32_t *type)
+{
+    uint32_t o = id - P_FX1_TYPE;
+    if (id < P_FX1_TYPE || o >= 4u * NFX || !(o & 3u))
+        return -1;
+    *type = cur.p[id - (o & 3u)] < NFXT ? cur.p[id - (o & 3u)] : 0u;
+    return (int32_t)(o & 3u) - 1;
+}
+
+static const char *param_name(uint32_t id)
+{
+    uint32_t t = 0;
+    int32_t k = fx_knob(id, &t);
+    return k < 0 ? PDEF[id].name : FXDEF[t].lab[k];
+}
+
+static void wave_name(char *out, uint32_t w)
+{
+    if (w < AP_NTAB) {
+        put_s(out, AP_WT_NAME[w]);
+    } else {
+        char *p = put_s(out, "USER ");
+        *p++ = (char)('1' + (w - AP_NTAB) % NUWT);
+        *p = 0;
+    }
+}
+
+static uint32_t is_bipolar(const pdef_t *d);
+static uint32_t param_bipolar(uint32_t id)
+{
+    uint32_t t = 0;
+    int32_t k = fx_knob(id, &t);
+    if (k >= 0)
+        return FXDEF[t].kind[k] == 1u;
+    return is_bipolar(&PDEF[id]) || id == P_F_ENV || id == P_A_PAN || id == P_B_PAN;
+}
 
 static void param_text(char *out, uint32_t id)
 {
     const pdef_t *d = &PDEF[id];
-    int32_t v = cur.p[id];
+    int32_t v = cur.p[id], k;
+    uint32_t t = 0;
+    if ((k = fx_knob(id, &t)) >= 0) {
+        if (!t)
+            put_s(out, "");
+        else if (FXDEF[t].kind[k] == 2u)
+            put_s(out, LS_DIV[(v * 12) >> 7]);
+        else
+            put_i(out, FXDEF[t].kind[k] == 1u ? v - 64 : v, FXDEF[t].kind[k] == 1u);
+        return;
+    }
+    if (id == P_A_WAVE || id == P_B_WAVE) {
+        wave_name(out, (uint32_t)v);
+        return;
+    }
     if (d->fmt == F_LIST)
         put_s(out, LISTS[d->aux][v]);
     else if (d->fmt == F_PCT)
         put_s(put_i(out, v, 0), "%");
     else
-        put_i(out, v - d->aux, is_bipolar(d) || id == P_F_ENV || id == P_F_LFO || id == P_A_PAN || id == P_B_PAN
-                               || id == P_SUB_OCT);
+        put_i(out, v - d->aux, param_bipolar(id) || id == P_SUB_OCT);
 }
 
 static void preset_label(char *out, uint32_t idx)
@@ -211,7 +267,13 @@ static void draw_tile(uint32_t k)
     } else {
         const pdef_t *d = &PDEF[id];
         int32_t v = cur.p[id], w;
-        const char *nm = d->name;
+        const char *nm = param_name(id);
+        uint32_t fxt = 0;
+        if (fx_knob(id, &fxt) >= 0 && !fxt) {    /* a knob of an empty slot */
+            H->cv_rect(1, 2, 58, 92, U_TRACK);
+            H->cv_blit((int32_t)k * 60, 144);
+            return;
+        }
         if (id <= P_M4) {                       /* a macro: named after the first thing it moves */
             uint32_t i;
             nm = id == P_M1 ? "M1" : id == P_M2 ? "M2" : id == P_M3 ? "M3" : "M4";
@@ -230,8 +292,8 @@ static void draw_tile(uint32_t k)
             if (bw < 4)
                 bw = 4;
             H->cv_rect(6 + ((48 - bw) * v) / (d->max ? d->max : 1), 64, bw, 18, c);
-        } else if (is_bipolar(d) || id == P_F_ENV || id == P_F_LFO || id == P_A_PAN || id == P_B_PAN) {
-            int32_t mid = d->aux, half = d->max - mid > mid ? d->max - mid : mid;
+        } else if (param_bipolar(id)) {
+            int32_t mid = fx_knob(id, &fxt) >= 0 ? 64 : d->aux, half = d->max - mid > mid ? d->max - mid : mid;
             w = ((v - mid) * 24) / (half ? half : 1);
             if (w >= 0)
                 H->cv_rect(30, 64, w ? w : 1, 18, c);
@@ -301,7 +363,8 @@ static void disp_wave(uint32_t o, uint16_t c)
         a += ((b - a) * mixf) >> 12;
         col_fill((int32_t)x, 43, 43 - (a * 38) / 32768, c);
     }
-    p = put_s(s, AP_WT_NAME[cur.p[po]]);
+    wave_name(s, cur.p[po]);
+    p = s;
     H->cv_text(4, 0, 0, s, U_TXT);
     for (x = 0; x < AP_NF; x++)                 /* the eight frames, and where POS is among them */
         H->cv_rect(176 + (int32_t)x * 8, 5, 6, 6, x == f0 || (mixf && x == f0 + 1u) ? c : U_TILE);
@@ -323,21 +386,51 @@ static void disp_mix(void)
     }
 }
 
+/* the filter, drawn as its kind: where CUTOFF is, how steep, where RESO lifts it */
 static void disp_filter(uint16_t c)
 {
-    int32_t type = PV(F_TYPE), xc = 20 + (PV(F_CUT) * 200) / 127, pk = (PV(F_RES) * 30) / 127, x;
-    int32_t slope = type == FT_LP24 ? 30 : 60;
+    /* per type: 0 low-pass, 1 high-pass, 2 band, 3 notch, 4 peak, 5 comb, 6 steps, 7 ring; and its slope in px */
+    static const uint8_t KIND[NFT] = {0, 0, 0, 0, 0, 0, 1, 1, 1, 2, 2, 3, 3, 4, 2, 2, 2, 5, 5, 6, 7};
+    static const uint8_t SLOPE[NFT] = {0, 110, 60, 42, 30, 30, 110, 60, 30, 50, 28, 14, 14, 20, 60, 30, 30, 0, 0, 0, 0};
+    int32_t type = PV(F_TYPE), xc = 20 + (PV(F_CUT) * 200) / 127, pk = (PV(F_RES) * 30) / 127, x, var = PV(F_VAR);
+    int32_t slope = SLOPE[type], two = type == FT_NOTCH2 || type == FT_TWIN || type == FT_VOWEL ? 16 + var / 3 : 0;
     if (type == FT_OFF) {
         H->cv_text(0, 36, 0, "            FILTER OFF", U_DIM);
         return;
     }
     for (x = 0; x < 240; x++) {
-        int32_t d = x - xc, y, flat = 44, low = 86;
-        int32_t bump = d > -24 && d < 24 ? (pk * (24 - (d < 0 ? -d : d))) / 24 : 0;
-        switch (type) {
-        case FT_HP: y = d >= 0 ? flat : flat - (d * (low - flat)) / slope; break;
-        case FT_BP: y = flat + ((d < 0 ? -d : d) * (low - flat)) / 50 - 14; break;
-        case FT_NOTCH: y = (d < 0 ? -d : d) < 14 ? low - ((d < 0 ? -d : d) * (low - flat)) / 14 : flat; bump = 0; break;
+        int32_t d = x - xc, ad = d < 0 ? -d : d, y, flat = 44, low = 86, d2 = d - two, ad2 = d2 < 0 ? -d2 : d2;
+        int32_t bump = ad < 24 ? (pk * (24 - ad)) / 24 : 0;
+        switch (KIND[type]) {
+        case 1: y = d >= 0 ? flat : flat - (d * (low - flat)) / slope; break;
+        case 2:
+            y = flat + (ad * (low - flat)) / slope - 14;
+            if (type == FT_BANDW)
+                y = d > 0 ? flat + (d * (low - flat)) / 60 : d > -(20 + var / 2) ? flat : flat + ((-d - 20 - var / 2) * (low - flat)) / 30;
+            if (two && ad2 < ad)
+                y = flat + (ad2 * (low - flat)) / slope - 14;
+            bump = type == FT_BANDW ? bump : 0;
+            break;
+        case 3:
+            y = ad < slope ? low - (ad * (low - flat)) / slope : flat;
+            if (two && ad2 < slope)
+                y = low - (ad2 * (low - flat)) / slope;
+            bump = 0;
+            break;
+        case 4: y = flat - (ad < slope ? ((slope - ad) * (14 + pk)) / slope : 0); bump = 0; break;
+        case 5: {                               /* a comb: teeth, closer together as CUTOFF goes down */
+            int32_t per = 8 + (127 - PV(F_CUT)) / 5, ph = x % per;
+            y = flat - ((ph < per / 2 ? ph : per - ph) * (10 + pk)) / (per / 2) + 10;
+            bump = 0;
+            break;
+        }
+        case 6: {                               /* steps, wider as CUTOFF goes down */
+            int32_t st = 4 + (127 - PV(F_CUT)) / 6;
+            y = 70 - ((x / st) * st * 50) / 240;
+            bump = 0;
+            break;
+        }
+        case 7: y = flat - (sinr[((uint32_t)x * (2u + (uint32_t)PV(F_CUT) / 8u) * 17u) & 1023u] * 30) / 32768; bump = 0; break;
         default: y = d <= 0 ? flat : flat + (d * (low - flat)) / slope; break;
         }
         y -= bump;
@@ -345,7 +438,8 @@ static void disp_filter(uint16_t c)
         if (y < 2) y = 2;
         col_fill(x, 87, y, c);
     }
-    H->cv_rect(xc, 0, 1, 88, U_EDGE);
+    if (KIND[type] < 5)
+        H->cv_rect(xc, 0, 1, 88, U_EDGE);
 }
 
 static void disp_env(uint32_t base, uint16_t c)
@@ -432,16 +526,21 @@ static void disp_arp(uint16_t c)
 
 static void disp_fx(uint32_t which, uint16_t c)
 {
-    static const char *const NM[4] = {"DRV", "CHO", "DLY", "REV"};
-    static const uint8_t ID[4] = {P_DRV_AMT, P_CHO_MIX, P_DLY_MIX, P_REV_MIX};
-    uint32_t i;
-    for (i = 0; i < 4u; i++) {
-        int32_t x = 4 + (int32_t)i * 59, h = (cur.p[ID[i]] * 60) / 127;
-        uint32_t here = which ? i == which : i < 2u;
-        H->cv_rect(x, 22, 55, 62, U_TRACK);
-        if (h)
-            H->cv_rect(x, 84 - h, 55, h, here ? c : U_EDGE);
-        H->cv_text(x + 2, 2, 0, NM[i], here ? U_TXT : U_DIM);
+    uint32_t i, seen = 0;
+    char s_[2] = {0, 0};
+    for (i = 0; i < NFX; i++) {                 /* the seven slots in their order; one that repeats an effect is off */
+        uint32_t t = cur.p[P_FX1_TYPE + 4u * i], dup = t && (seen >> t & 1u);
+        int32_t x = 3 + (int32_t)i * 34;
+        char ab[4];
+        seen |= 1u << t;
+        ab[0] = LS_FX[t][0];
+        ab[1] = LS_FX[t][1];
+        ab[2] = t == FX_EQ || !t ? 0 : LS_FX[t][2];
+        ab[3] = 0;
+        H->cv_rect(x, 24, 30, 60, i == which ? c : t && !dup ? U_EDGE : U_TRACK);
+        H->cv_text(x + 3, 44, 0, ab, i == which ? U_INK : t && !dup ? U_TXT : U_DIM);
+        s_[0] = (char)('1' + i);
+        H->cv_text(x + 11, 2, 0, s_, i == which ? U_TXT : U_DIM);
     }
 }
 

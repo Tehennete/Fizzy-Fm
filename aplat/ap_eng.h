@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (C) 2026 Hugo Gilbert */
 /* APLAT's engine: eight notes, each with two wavetable oscillators (up to five unison voices each), a sub,
  * noise, a filter of its own, three envelopes and two LFOs of its own, and a modulation matrix worked out per note.
  * Integers only (docs/RULES.md of fm1-dock): Q15 samples, 32-bit phases, 64-bit products but no 64-bit division.
@@ -15,7 +16,7 @@
  * (tools/load/count.py): about 40 % of the FM-1's time at fm1-emu's rate, the effects and the way out on top.
  * A sound with more unison, a stereo or a 24 dB filter gets fewer notes at once. Measure on the unit (the bar on
  * the PLAY page) before raising it. */
-#define COST_BUDGET 2100u
+#define COST_BUDGET 1900u                       /* (with 350 more for the effects: what they take comes off it) */
 
 static patch_t cur;                             /* the sound being played and edited */
 #define PV(id) ((int32_t)cur.p[P_##id])
@@ -36,11 +37,14 @@ static int16_t wt_buf[3][AP_NF * WT_FRM];
 static volatile uint8_t wt_cur[2] = {0, 1};     /* the buffer oscillator A / B plays */
 static int16_t sinr[1025];                      /* the sine, in RAM */
 
+static int16_t uwt[NUWT][AP_NF * AP_NH * 2u];  /* the tables of your own, as the built-in ones are kept */
+
 /* one frame of table `tab` into dst (WT_FRM samples), from its 64 harmonics */
 static void wt_frame(int16_t *dst, uint32_t tab, uint32_t frame)
 {
     static int32_t acc[512];
-    const int16_t *spec = AP_WT + (tab * AP_NF + frame) * AP_NH * 2u;
+    const int16_t *spec = (tab < AP_NTAB ? AP_WT + tab * AP_NF * AP_NH * 2u : uwt[(tab - AP_NTAB) % NUWT])
+                          + frame * AP_NH * 2u;
     uint32_t k, i, h;
     for (k = 0; k < WT_LEVELS; k++) {
         uint32_t len = WT_LEN[k], step = 1024u / len;
@@ -175,12 +179,18 @@ typedef struct {
     uint32_t nz, nzph;                          /* noise */
     int32_t nzf[3], nzh;
     int32_t ic[2][4];                           /* the filter's state: [left, right][two stages of two] */
-    int32_t a1, a2, a3;                         /* its coefficients now, Q30 (they move a little every frame) */
-    int32_t b1, b2, b3;                         /* LP 24's second stage: the same cutoff, no resonance */
+    int32_t fcur[2][3];                         /* its two stages' coefficients now, Q30 (they move every frame) */
+    int32_t pg, ps[2];                          /* the 6 dB stage: its coefficient now (Q31), its state */
+    int32_t cd, clp[2];                         /* COMB: its delay now (frames Q8), the loop's damping */
+    uint32_t cw;
+    uint32_t dph, rph;                          /* DECIM's clock, RING's carrier */
+    int32_t dh[2];
     int32_t gl, gr;                             /* the gains now, Q23 */
     int32_t sgl, sgr;                           /* the direct sub's */
 } voice_t;
 static voice_t voice[NV];
+#define COMB_N 1024u
+static int16_t comb_buf[NV][2][COMB_N];         /* COMB's memory: a line a voice and a side (down to 43 Hz) */
 static uint32_t ages;
 static int32_t last_pitch = 60 << 16;           /* the last note played (GLIDE starts there) */
 static volatile uint32_t eng_active;            /* a bit per voice sounding (the screen) */
@@ -353,6 +363,7 @@ static void filter_coef(fcoef_t *f, int32_t cut_q8, int32_t k_q16)
     f->a3 = (int32_t)(((uint64_t)g * (uint32_t)f->a2) >> 24);
 }
 
+enum { SM_LP, SM_BP, SM_BPN, SM_HP, SM_NOTCH, SM_PEAK };      /* what a stage gives out */
 /* the high word of a product: one instruction on a 32-bit processor */
 static inline int32_t mulh(int32_t a, int32_t b) { return (int32_t)(((int64_t)a * b) >> 32); }
 
@@ -380,9 +391,11 @@ static void svf_run(int32_t *ic, int32_t *x, uint32_t n, uint32_t type, int32_t 
     int32_t ic1 = ic[0], ic2 = ic[1], k29 = k << 13;
     uint32_t i;
     switch (type) {
-    case FT_BP: SVF_LOOP(v1) break;
-    case FT_HP: SVF_LOOP(v0 - mulh(k29, v1) * 8 - v2) break;
-    case FT_NOTCH: SVF_LOOP(v0 - mulh(k29, v1) * 8) break;
+    case SM_BP: SVF_LOOP(v1) break;
+    case SM_BPN: SVF_LOOP(mulh(k29, v1) * 8) break;             /* a band-pass whose peak is at 1 */
+    case SM_HP: SVF_LOOP(v0 - mulh(k29, v1) * 8 - v2) break;
+    case SM_NOTCH: SVF_LOOP(v0 - mulh(k29, v1) * 8) break;
+    case SM_PEAK: SVF_LOOP(2 * v2 - v0 + mulh(k29, v1) * 8) break;
     default: SVF_LOOP(v2) break;
     }
     ic[0] = clampi(ic1, -(1 << 29), 1 << 29);
@@ -409,6 +422,9 @@ static void pre_run(int32_t *x, uint32_t n, int32_t g8, uint32_t curve)
 /* ---- notes */
 static uint32_t guard_max = NV;                 /* notes the measured time of a block leaves (aplat.c, render) */
 
+/* what a filter type costs a frame and a side, in the units of COST_BUDGET */
+static const uint8_t FT_COST[NFT] = {0, 12, 26, 38, 52, 72, 12, 26, 52, 26, 52, 26, 52, 26, 52, 58, 58, 26, 26, 10, 12};
+
 static uint32_t eng_note_cost(void)
 {
     uint32_t i, la = PV(A_LVL) != 0, lb = PV(B_LVL) != 0, pa, pb, stereo, stages, cost;
@@ -419,8 +435,8 @@ static uint32_t eng_note_cost(void)
     pa = la ? (uint32_t)PV(A_UNI) + 1u : 0u;
     pb = lb ? (uint32_t)PV(B_UNI) + 1u : 0u;
     stereo = (pa > 1u && PV(A_SPR)) || (pb > 1u && PV(B_SPR)) || (pa && pb && PV(A_PAN) != PV(B_PAN));
-    stages = PV(F_TYPE) == FT_OFF ? 0u : PV(F_TYPE) == FT_LP24 ? 2u : 1u;
-    cost = 60u + (pa + pb) * (stereo ? 40u : 34u) + (stereo ? 2u : 1u) * (stages * 26u + (PV(F_DRV) ? 20u : 4u));
+    stages = FT_COST[PV(F_TYPE)];
+    cost = 60u + (pa + pb) * (stereo ? 40u : 34u) + (stereo ? 2u : 1u) * (stages + (PV(F_DRV) ? 20u : 4u));
     if (pa && PV(A_WMODE) != W_OFF)
         cost += pa * 6u + (PV(A_WMODE) == W_FM ? 34u : 0u);
     if (pb && PV(B_WMODE) != W_OFF)
@@ -432,9 +448,24 @@ static uint32_t eng_note_cost(void)
     return cost;
 }
 
+/* what the effects picked cost a frame, in the same units (each kind counts once: it runs once) */
+static const uint8_t FX_COST[NFXT] = {0, 34, 30, 16, 40, 44, 50, 110, 60, 80, 110, 24, 16, 60, 125};
+static uint32_t eng_fx_cost(void)
+{
+    uint32_t i, seen = 0, c = 0;
+    for (i = 0; i < NFX; i++) {
+        uint32_t t = cur.p[P_FX1_TYPE + 4u * i];
+        if (t && t < NFXT && !(seen >> t & 1u)) {
+            seen |= 1u << t;
+            c += FX_COST[t];
+        }
+    }
+    return c;
+}
+
 static uint32_t eng_max_notes(void)
 {
-    uint32_t n = COST_BUDGET / eng_note_cost();
+    uint32_t fxc = eng_fx_cost(), n = (COST_BUDGET + 350u - (fxc > 1400u ? 1400u : fxc)) / eng_note_cost();
     if (PV(MODE) != MODE_POLY)
         return 1u;
     if (n > guard_max)
@@ -482,8 +513,17 @@ static void voice_start(voice_t *v, uint32_t key, uint32_t vel, uint32_t legato)
             v->ic[0][i] = v->ic[1][i] = 0;
         v->nzf[0] = v->nzf[1] = v->nzf[2] = 0;
         v->gl = v->gr = v->sgl = v->sgr = 0;
-        v->a1 = v->a2 = v->a3 = 0;
-        v->b1 = v->b2 = v->b3 = 0;
+        for (i = 0; i < 3u; i++)
+            v->fcur[0][i] = v->fcur[1][i] = 0;
+        v->pg = v->ps[0] = v->ps[1] = 0;
+        v->cd = v->clp[0] = v->clp[1] = 0;
+        v->dph = v->rph = 0;
+        v->dh[0] = v->dh[1] = 0;
+        if (PV(F_TYPE) == FT_COMBP || PV(F_TYPE) == FT_COMBM) {
+            int16_t *cb = comb_buf[v - voice][0];
+            for (i = 0; i < 2u * COMB_N; i++)
+                cb[i] = 0;
+        }
     }
 }
 
@@ -675,9 +715,96 @@ static inline void pan_gains(int32_t pan, int32_t *l, int32_t *r)
     *r = pan < 0 ? 32767 + pan : 32767;
 }
 
+/* the filter types that start with a 12 dB stage (it takes the input's gain), and those whose resonance is loud */
+#define FT_SVF1 (1u << FT_LP12 | 1u << FT_LP18 | 1u << FT_LP24 | 1u << FT_LPHOT | 1u << FT_HP12 | 1u << FT_HP24 \
+                 | 1u << FT_BP12 | 1u << FT_BP24 | 1u << FT_NOTCH | 1u << FT_NOTCH2 | 1u << FT_PEAK | 1u << FT_BANDW)
+#define FT_RESO (FT_SVF1 | 1u << FT_COMBP | 1u << FT_COMBM)
+
 /* a step that reaches d in n frames (n is a whole tick but for the end of an odd block) */
 static inline int32_t per_frame(int32_t d, uint32_t n) { return n == SUBN ? d >> 5 : d / (int32_t)n; }
 typedef char subn_is_32[SUBN == 32u ? 1 : -1];
+
+/* ---- the filter's parts. A 12 dB stage (the first or the second of a voice), left and right */
+static void flt_stage(voice_t *v, uint32_t st, int32_t *l, int32_t *r, uint32_t n, uint32_t mode, int32_t cut,
+                      int32_t k, int32_t g8)
+{
+    fcoef_t f;
+    int32_t *c = v->fcur[st], d1, d2, d3;
+    filter_coef(&f, cut, k);
+    if (!c[0] && !c[1]) {                       /* a new voice: no glide from nothing */
+        c[0] = f.a1;
+        c[1] = f.a2;
+        c[2] = f.a3;
+    }
+    d1 = per_frame(f.a1 - c[0], n);
+    d2 = per_frame(f.a2 - c[1], n);
+    d3 = per_frame(f.a3 - c[2], n);
+    svf_run(v->ic[0] + 2u * st, l, n, mode, c[0], c[1], c[2], d1, d2, d3, f.k, g8);
+    if (r)
+        svf_run(v->ic[1] + 2u * st, r, n, mode, c[0], c[1], c[2], d1, d2, d3, f.k, g8);
+    c[0] += d1 * (int32_t)n;
+    c[1] += d2 * (int32_t)n;
+    c[2] += d3 * (int32_t)n;
+}
+
+/* a 6 dB stage, low-pass or high-pass */
+static void flt_pole(voice_t *v, int32_t *l, int32_t *r, uint32_t n, uint32_t hp, int32_t cut)
+{
+    uint32_t i, ix, fr, g, ch;
+    int32_t G, dG;
+    cut = clampi(cut, 8 * 256, 135 * 256);
+    ix = (uint32_t)(cut - 2048) >> 7;
+    fr = (uint32_t)(cut - 2048) & 127u;
+    g = AP_GTAB[ix];
+    g += (uint32_t)(((uint64_t)(AP_GTAB[ix + 1u] - g) * fr) >> 7);
+    G = (int32_t)(((uint64_t)g * (0xFFFFFFFFu / (65536u + (g >> 8)))) >> 9);     /* g / (1 + g), Q31 */
+    if (!v->pg)
+        v->pg = G;
+    dG = per_frame(G - v->pg, n);
+    for (ch = 0; ch < (r ? 2u : 1u); ch++) {
+        int32_t *x = ch ? r : l, s = v->ps[ch], gg = v->pg;
+        for (i = 0; i < n; i++) {
+            int32_t v0 = x[i] * 256, t = mulh(v0 - s, gg) * 2, y = t + s;
+            s = y + t;
+            x[i] = (hp ? v0 - y : y) >> 8;
+            gg += dG;
+        }
+        v->ps[ch] = s;
+    }
+    v->pg += dG * (int32_t)n;
+}
+
+/* COMB: a short echo tuned to CUTOFF, fed back by RESO (the other way round for COMB -); SHAPE dulls the loop */
+static void flt_comb(voice_t *v, int32_t *l, int32_t *r, uint32_t n, int32_t cut, int32_t res, int32_t var, uint32_t neg)
+{
+    uint32_t inc = pitch_inc(cut), i, ch, w0 = v->cw;
+    int32_t to = (int32_t)(0xFFFFFFFFu / ((inc >> 8) + 1u)), fb = res * 250, damp = 32767 - var * 240, dd;
+    to = clampi(to, 2 << 8, (int32_t)(COMB_N - 4u) << 8);
+    if (neg)
+        fb = -fb;
+    if (!v->cd)
+        v->cd = to;
+    dd = per_frame(to - v->cd, n);
+    for (ch = 0; ch < (r ? 2u : 1u); ch++) {
+        int16_t *buf = comb_buf[v - voice][ch];
+        int32_t *x = ch ? r : l, d = v->cd, lp = v->clp[ch];
+        uint32_t w = w0;
+        for (i = 0; i < n; i++) {
+            uint32_t p = (w - (uint32_t)(d >> 8)) & (COMB_N - 1u);
+            int32_t a = buf[p], y, in;
+            y = (a + (((buf[(p - 1u) & (COMB_N - 1u)] - a) * (d & 255)) >> 8)) * 2;
+            lp += ((y - lp) * damp) >> 15;
+            in = clampi(x[i] + ((lp * fb) >> 15), -65000, 65000);
+            buf[w] = (int16_t)(in >> 1);
+            x[i] = in;
+            w = (w + 1u) & (COMB_N - 1u);
+            d += dd;
+        }
+        v->clp[ch] = lp;
+    }
+    v->cw = (w0 + n) & (COMB_N - 1u);
+    v->cd += dd * (int32_t)n;
+}
 
 /* ---- one voice, n frames (a control tick), added into outl / outr. Returns 0 when it has gone silent */
 static uint32_t voice_run(voice_t *v, int32_t *outl, int32_t *outr, uint32_t n)
@@ -687,7 +814,6 @@ static uint32_t voice_run(voice_t *v, int32_t *outl, int32_t *outr, uint32_t n)
     int32_t e1, key, base, cut, amp, pl, pr, tl, tr, dgl, dgr;
     uint32_t i, o, ftype = (uint32_t)PV(F_TYPE), stereo = gt.stereo;
     int32_t *rbuf = stereo ? vr : 0;
-    fcoef_t fc, fc2;
 
     /* its own envelopes and LFOs */
     if (v->kill) {
@@ -897,57 +1023,123 @@ static uint32_t voice_run(voice_t *v, int32_t *outl, int32_t *outr, uint32_t n)
 
     /* into the filter at half level, under a soft ceiling: DRIVE pushes into it */
     {
-        int32_t res = clampi((sm[SM_RES] >> 16) + ((dst[D_RES] * 127) >> 15), 0, 127);
+        int32_t res = clampi((sm[SM_RES] >> 16) + ((dst[D_RES] * 127) >> 15), 0, 127), var = PV(F_VAR);
+        int32_t k = 131072 - res * 1011;        /* 2 (no resonance) .. 0.04 */
         /* (Q8: a voice's sum times it stays in 32 bits. Resonance is loud: less goes in) */
-        int32_t g8 = ((ftype != FT_OFF ? 4096 - res * 18 : 4096) * gt.drive) >> 17, gin = g8;
-        if (PV(F_DRV) || ftype == FT_OFF) {     /* the curve (or, with no filter, only the ceiling) here: the */
-            pre_run(vl, n, g8, PV(F_DRV) != 0); /* filter then takes it as it is */
+        int32_t g8 = ((FT_RESO >> ftype & 1u ? 4096 - res * 18 : 4096) * gt.drive) >> 17, gin = g8;
+        if (PV(F_DRV) || !(FT_SVF1 >> ftype & 1u)) {     /* the curve (or only the ceiling) here; a filter that */
+            pre_run(vl, n, g8, PV(F_DRV) != 0);          /* starts with a 12 dB stage takes the gain itself */
             if (stereo)
                 pre_run(vr, n, g8, PV(F_DRV) != 0);
             gin = 256;
         }
-        /* its filter: the cutoff from the knob, the key, envelope 2, the velocity, LFO 1 and the matrix */
-        if (ftype != FT_OFF) {
-            int32_t d1, d2, d3;
-            cut = 16 * 256 + ((sm[SM_CUT] >> 8) * 15) / 16;         /* 16 .. 135 semitones */
-            cut += (((int32_t)v->note - 60) * 256 * PV(F_KEY)) / 100;
-            cut += (src[S_ENV2] * (PV(F_ENV) - 64) * 2) >> 8;       /* +-5 octaves */
-            cut += ((src[S_VEL] - 16384) * PV(F_VEL)) >> 8;
-            cut += (src[S_LFO1] * (PV(F_LFO) - 64)) >> 8;
-            cut += (dst[D_CUT] * 64 * 256) >> 15;
-            filter_coef(&fc, cut, 131072 - res * 1011);     /* 2 (none) .. 0.04 */
-            if (!v->a1 && !v->a2) {             /* a new voice: no glide from nothing */
-                v->a1 = fc.a1;
-                v->a2 = fc.a2;
-                v->a3 = fc.a3;
-            }
-            d1 = per_frame(fc.a1 - v->a1, n);
-            d2 = per_frame(fc.a2 - v->a2, n);
-            d3 = per_frame(fc.a3 - v->a3, n);
-            svf_run(v->ic[0], vl, n, ftype, v->a1, v->a2, v->a3, d1, d2, d3, fc.k, gin);
+        /* the cutoff: the knob, the key, envelope 2, the velocity and the matrix */
+        cut = 16 * 256 + ((sm[SM_CUT] >> 8) * 15) / 16;             /* 16 .. 135 semitones */
+        cut += (((int32_t)v->note - 60) * 256 * PV(F_KEY)) / 100;
+        cut += (src[S_ENV2] * (PV(F_ENV) - 64) * 2) >> 8;           /* +-5 octaves */
+        cut += ((src[S_VEL] - 16384) * PV(F_VEL)) >> 8;
+        cut += (dst[D_CUT] * 64 * 256) >> 15;
+        switch (ftype) {
+        case FT_OFF: break;
+        case FT_LP6: flt_pole(v, vl, rbuf, n, 0, cut); break;
+        case FT_HP6: flt_pole(v, vl, rbuf, n, 1, cut); break;
+        case FT_LP12: flt_stage(v, 0, vl, rbuf, n, SM_LP, cut, k, gin); break;
+        case FT_HP12: flt_stage(v, 0, vl, rbuf, n, SM_HP, cut, k, gin); break;
+        case FT_BP12: flt_stage(v, 0, vl, rbuf, n, SM_BP, cut, k, gin); break;
+        case FT_NOTCH: flt_stage(v, 0, vl, rbuf, n, SM_NOTCH, cut, k, gin); break;
+        case FT_PEAK: flt_stage(v, 0, vl, rbuf, n, SM_PEAK, cut, k, gin); break;
+        case FT_LP18:
+            flt_stage(v, 0, vl, rbuf, n, SM_LP, cut, k, gin);
+            flt_pole(v, vl, rbuf, n, 0, cut);
+            break;
+        case FT_LP24:                           /* the second stage: the same cutoff, flat */
+            flt_stage(v, 0, vl, rbuf, n, SM_LP, cut, k, gin);
+            flt_stage(v, 1, vl, rbuf, n, SM_LP, cut, 92682, 256);
+            break;
+        case FT_LPHOT:                          /* ... and the curve between the two */
+            flt_stage(v, 0, vl, rbuf, n, SM_LP, cut, k, gin);
+            pre_run(vl, n, 420, 1);
             if (stereo)
-                svf_run(v->ic[1], vr, n, ftype, v->a1, v->a2, v->a3, d1, d2, d3, fc.k, gin);
-            v->a1 += d1 * (int32_t)n;
-            v->a2 += d2 * (int32_t)n;
-            v->a3 += d3 * (int32_t)n;
-            if (ftype == FT_LP24) {             /* its second stage: the same cutoff, flat */
-                int32_t e1_, e2_, e3_;
-                filter_coef(&fc2, cut, 92682);  /* 1.414 */
-                if (!v->b1 && !v->b2) {
-                    v->b1 = fc2.a1;
-                    v->b2 = fc2.a2;
-                    v->b3 = fc2.a3;
-                }
-                e1_ = per_frame(fc2.a1 - v->b1, n);
-                e2_ = per_frame(fc2.a2 - v->b2, n);
-                e3_ = per_frame(fc2.a3 - v->b3, n);
-                svf_run(v->ic[0] + 2, vl, n, ftype, v->b1, v->b2, v->b3, e1_, e2_, e3_, fc2.k, 256);
-                if (stereo)
-                    svf_run(v->ic[1] + 2, vr, n, ftype, v->b1, v->b2, v->b3, e1_, e2_, e3_, fc2.k, 256);
-                v->b1 += e1_ * (int32_t)n;
-                v->b2 += e2_ * (int32_t)n;
-                v->b3 += e3_ * (int32_t)n;
+                pre_run(vr, n, 420, 1);
+            flt_stage(v, 1, vl, rbuf, n, SM_LP, cut, 92682, 256);
+            break;
+        case FT_HP24:
+            flt_stage(v, 0, vl, rbuf, n, SM_HP, cut, k, gin);
+            flt_stage(v, 1, vl, rbuf, n, SM_HP, cut, 92682, 256);
+            break;
+        case FT_BP24:
+            flt_stage(v, 0, vl, rbuf, n, SM_BP, cut, k, gin);
+            flt_stage(v, 1, vl, rbuf, n, SM_BPN, cut, 65536, 256);
+            break;
+        case FT_NOTCH2:                         /* a second notch above: SHAPE is how far (5 st .. 3 octaves) */
+            flt_stage(v, 0, vl, rbuf, n, SM_NOTCH, cut, k, gin);
+            flt_stage(v, 1, vl, rbuf, n, SM_NOTCH, cut + 5 * 256 + var * 62, k, 256);
+            break;
+        case FT_BANDW:                          /* low-pass, then a high-pass below: SHAPE is the band's width */
+            flt_stage(v, 0, vl, rbuf, n, SM_LP, cut, k, gin);
+            flt_stage(v, 1, vl, rbuf, n, SM_HP, cut - 12 * 256 - var * 97, 92682, 256);
+            break;
+        case FT_TWIN:                           /* two band-passes side by side: SHAPE is how far apart */
+        case FT_VOWEL: {                        /* ... or on a vowel's two formants: CUTOFF goes A E I O U */
+            static int32_t tl[SUBN], tr[SUBN];
+            int32_t c1 = cut, c2 = cut + 3 * 256 + var * 66;
+            if (ftype == FT_VOWEL) {
+                static const int16_t F1[6] = {19907, 18483, 15488, 18816, 15974, 15974};    /* semitones Q8 */
+                static const int16_t F2[6] = {21683, 24013, 24986, 20531, 20685, 20685};
+                int32_t pos = clampi(((cut - 16 * 256) * 9) >> 8, 0, 1023), ix = pos >> 8, fr = pos & 255;
+                c1 = F1[ix] + (((F1[ix + 1] - F1[ix]) * fr) >> 8) + var * 24;       /* SHAPE: a smaller mouth */
+                c2 = F2[ix] + (((F2[ix + 1] - F2[ix]) * fr) >> 8) + var * 24;
             }
+            for (i = 0; i < n; i++) {
+                tl[i] = vl[i];
+                if (stereo)
+                    tr[i] = vr[i];
+            }
+            flt_stage(v, 0, vl, rbuf, n, SM_BPN, c1, k, 256);
+            flt_stage(v, 1, tl, stereo ? tr : 0, n, SM_BPN, c2, k, 256);
+            for (i = 0; i < n; i++) {
+                vl[i] += tl[i];
+                if (stereo)
+                    vr[i] += tr[i];
+            }
+            break;
+        }
+        case FT_COMBP:
+        case FT_COMBM: flt_comb(v, vl, rbuf, n, cut, res, var, ftype == FT_COMBM); break;
+        case FT_DECIM: {                        /* fewer frames (CUTOFF) and fewer bits (SHAPE) */
+            uint32_t inc = pitch_inc(cut + 24 * 256), ph = v->dph, sh = (uint32_t)(var * 11) >> 7;
+            int32_t hl = v->dh[0], hr = v->dh[1];
+            for (i = 0; i < n; i++) {
+                uint32_t q = ph + inc;
+                if (q < ph) {
+                    hl = (vl[i] >> sh) * (1 << sh);
+                    if (stereo)
+                        hr = (vr[i] >> sh) * (1 << sh);
+                }
+                ph = q;
+                vl[i] = hl;
+                if (stereo)
+                    vr[i] = hr;
+            }
+            v->dph = ph;
+            v->dh[0] = hl;
+            v->dh[1] = hr;
+            break;
+        }
+        default: {                              /* RING: times a sine at CUTOFF; SHAPE is how much */
+            uint32_t inc = pitch_inc(cut), ph = v->rph;
+            int32_t m = 64 + (var >> 1);
+            for (i = 0; i < n; i++) {
+                int32_t c;
+                ph += inc;
+                c = sinr[ph >> 22];
+                vl[i] += (((vl[i] * c) >> 15) - vl[i]) * m >> 7;
+                if (stereo)
+                    vr[i] += (((vr[i] * c) >> 15) - vr[i]) * m >> 7;
+            }
+            v->rph = ph;
+            break;
+        }
         }
     }
 

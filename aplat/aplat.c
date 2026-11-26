@@ -1,18 +1,18 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* APLAT: a wavetable synth for the M-VAVE FM-1, a module of fm1-dock (firmware/dock/hb_module.h).
- * Copyright (C) 2026 Hugo
+ * Copyright (C) 2026 Hugo Gilbert
  *
- * Eight notes; each has two wavetable oscillators with unison and warps, a sub, noise, its own filter, three
- * envelopes, two LFOs and an eight-slot modulation matrix: every note is shaped on its own, by its velocity and
- * by the pressure of its own key. Drive, chorus, a tempo echo and a reverb after them; an arpeggiator; 23 factory
- * sounds and 32 of your own.
+ * Eight notes; each has two wavetable oscillators with unison and warps (64 tables, 3 of your own), a sub, noise,
+ * its own filter (20 types), three envelopes, two LFOs and an eight-slot modulation matrix: every note is shaped on
+ * its own, by its velocity and by the pressure of its own key. Seven effect slots after them (14 effects); an
+ * arpeggiator; factory sounds and 32 of your own. Every parameter is also an NRPN, in and out (the editor).
  *
  *   SELECT      the pages, one after the other        PRESETS   the sounds
  *   ALGORITHM   the wavetable of oscillator A (B on its pages)
  *   KNOB 1..4   the four tiles of the page
  *   PLAY        the PLAY page: four macros            EDIT      OSC A > OSC B > MIX
  *   SEL         FILTER      ENV   ENV 1 > 2 > 3       LFO       LFO 1 > 2 > 3
- *   SEQ         MATRIX      ARP   the arpeggiator     FX        DRIVE CHORUS > DELAY > REVERB
+ *   SEQ         MATRIX      ARP   the arpeggiator     FX        the seven effect slots (SELECT goes on)
  *   GLO         VOICE       REC   compare with the stored sound
  *   SAVE        pick a user sound with PRESETS, SAVE again (any other button: no) */
 #include "hb_module.h"
@@ -27,6 +27,36 @@ static const hb_host_t *H;
 #include "ap_ui.h"
 
 #define NAME "APLAT"
+
+/* ---- the link to an editor: every parameter is an NRPN (its number the parameter's, 0..131; its value 14 bits,
+ * controllers 99 / 98 then 6 / 38), in and out, over whatever MIDI the host has: USB, the DIN jack, Bluetooth.
+ * Nothing goes out until an editor has asked once (NR_DUMP): a FM-1 on stage stays quiet.
+ *   in    0..NP-1 a parameter          1000..1011 the name's letters      2000 send me everything
+ *         2001 store as user sound N   2002 pick sound N
+ *         2003 a table of your own begins (N = which), 3000..3003 its 1024 numbers in order (16 bits each: the
+ *         top two in the NRPN's number), 2005 it ends (the low 14 bits of their sum)
+ *   out   the same numbers for what changes on the FM-1; after "everything": 2010 the sound's number, 2011 the low
+ *         14 bits of the sum of the parameters; 2012 a table arrived whole (1) or not (0); 2013 this list's version */
+enum { NR_NAME = 1000, NR_DUMP = 2000, NR_STORE, NR_LOAD, NR_WT_BEGIN, NR_WT_RES, NR_WT_END, NR_PRESET = 2010, NR_SUM,
+       NR_WT_OK, NR_VERSION, NR_WT_DATA = 3000 };
+#define LINK_VERSION 1u
+#define TXQ 256u
+static uint32_t txq[TXQ], tx_w, tx_r;
+static uint8_t tx_linked, nr_pm, nr_pl, nr_dm, wt_slot;
+static int32_t tx_dump = -1;                    /* where "everything" has got to, -1: not sending it */
+static uint32_t wt_pos, wt_sum;
+static uint8_t wt_dirty;                        /* a table of your own to write to flash when nothing sounds */
+
+static void tx_put(uint32_t param, uint32_t value)
+{
+    if (tx_w - tx_r < TXQ)
+        txq[tx_w++ % TXQ] = param << 16 | (value & 0x3FFFu);
+}
+static void tx_param(uint32_t id)
+{
+    if (tx_linked)
+        tx_put(id, cur.p[id]);
+}
 
 /* ---- the sounds */
 static patch_t user[NUSER];
@@ -65,11 +95,13 @@ static void preset_load(uint32_t idx)
     ui_s.msg = 0;
     set_t = H->ms();
     ui_dirty_all();
+    if (tx_linked)
+        tx_dump = 0;                            /* the editor follows */
 }
 
 /* ---- the wavetables: the table an oscillator asks for is built into the buffer nobody plays, a frame a pass of
  * the main loop, then the oscillator moves to it */
-static uint8_t wt_tab[3] = {255, 255, 255};
+static uint8_t wt_tab[3] = {255, 255, 255};     /* (said above too: the link marks a table to build again) */
 static struct { uint8_t on, osc, tab, buf, frame; } wj;
 static uint32_t wt_service(void)
 {
@@ -170,6 +202,80 @@ static void render(int32_t *out, uint32_t n)
     load_guard(dt, n, act);
 }
 
+/* ---- the link to an editor, its two ends (the list of numbers is at the top of this file) */
+static void tx_service(void)                    /* from draw(): a message a millisecond, no more */
+{
+    static uint32_t last;
+    uint32_t now = H->ms(), n;
+    if (now == last)
+        return;
+    last = now;
+    for (n = 0; tx_dump >= 0 && tx_w - tx_r < TXQ - 8u && n < 4u; n++) {
+        uint32_t i = (uint32_t)tx_dump++, k, sum = 0;
+        if (i < NP) {
+            tx_put(i, cur.p[i]);
+        } else if (i < NP + NAME_LEN) {
+            tx_put(NR_NAME + i - NP, (uint8_t)cur.name[i - NP]);
+        } else {
+            for (k = 0; k < NP; k++)
+                sum += cur.p[k];
+            tx_put(NR_VERSION, LINK_VERSION);
+            tx_put(NR_PRESET, ui_s.preset);
+            tx_put(NR_SUM, sum);
+            tx_dump = -1;
+        }
+    }
+    if (tx_r != tx_w) {
+        uint32_t q = txq[tx_r++ % TXQ], p = q >> 16, v = q & 0x3FFFu;
+        H->midi_send(0xB0, 99, p >> 7);
+        H->midi_send(0xB0, 98, p & 127u);
+        H->midi_send(0xB0, 6, v >> 7);
+        H->midi_send(0xB0, 38, v & 127u);
+    }
+}
+
+static void save_now(void);
+
+static void nrpn_in(uint32_t p, uint32_t v)
+{
+    if (p < NP) {
+        cur.p[p] = (uint8_t)(v > PDEF[p].max ? PDEF[p].max : v);
+        ui_ext_dirty = 1;
+    } else if (p >= NR_NAME && p < NR_NAME + NAME_LEN - 1u) {
+        cur.name[p - NR_NAME] = (char)(v >= 32u && v < 127u ? v : 0u);
+        ui_ext_dirty = 1;
+    } else if (p == NR_DUMP) {
+        tx_linked = 1;
+        tx_dump = 0;
+    } else if (p == NR_STORE && v < NUSER) {
+        ui_s.save_to = (uint8_t)v;
+        save_now();
+    } else if (p == NR_LOAD) {
+        ui_pc_req = (int32_t)v;
+    } else if (p == NR_WT_BEGIN && v < NUWT) {
+        wt_slot = (uint8_t)v;
+        wt_pos = wt_sum = 0;
+    } else if (p >= NR_WT_DATA && p < NR_WT_DATA + 4u) {
+        uint32_t u = (p - NR_WT_DATA) << 14 | v;
+        if (wt_pos < AP_NF * AP_NH * 2u) {
+            uint32_t lo = u & 0xFFFFu, t = (lo + 64u) & 0xFFFFu;
+            if (t < 16u)                        /* -64..-49 (as the built-in tables: tools/gen_tables.py says why) */
+                lo = t > 7u ? lo + 16u - t : lo - 1u - t;
+            uwt[wt_slot][wt_pos++] = (int16_t)lo;
+        }
+        wt_sum += u;
+    } else if (p == NR_WT_END) {
+        uint32_t ok = wt_pos == AP_NF * AP_NH * 2u && (wt_sum & 0x3FFFu) == v, b;
+        if (ok) {
+            for (b = 0; b < 3u; b++)            /* whoever plays it builds it again */
+                if (wt_tab[b] == AP_NTAB + wt_slot)
+                    wt_tab[b] = 255;
+            wt_dirty = 1;
+        }
+        tx_put(NR_WT_OK, ok);
+    }
+}
+
 /* ---- MIDI */
 static void param_set(uint32_t id, uint32_t v127)
 {
@@ -177,9 +283,23 @@ static void param_set(uint32_t id, uint32_t v127)
     ui_ext_dirty = 1;
 }
 
+static void fx_mix(uint32_t type, uint32_t val)
+{
+    uint32_t i;
+    for (i = 0; i < NFX; i++)
+        if (cur.p[P_FX1_TYPE + 4u * i] == type) {
+            param_set(P_FX1_C + 4u * i, val);
+            return;
+        }
+}
+
 static void handle_cc(uint32_t num, uint32_t val)
 {
     switch (num) {
+    case 99: nr_pm = (uint8_t)val; break;       /* an NRPN: its number, then its value's two halves */
+    case 98: nr_pl = (uint8_t)val; break;
+    case 6: nr_dm = (uint8_t)val; break;
+    case 38: nrpn_in((uint32_t)nr_pm << 7 | nr_pl, (uint32_t)nr_dm << 7 | val); break;
     case 1: in_wheel = (int32_t)val; break;
     case 5: param_set(P_GLIDE, val); break;
     case 16: case 17: case 18: case 19: param_set(P_M1 + num - 16u, val); break;
@@ -189,9 +309,9 @@ static void handle_cc(uint32_t num, uint32_t val)
     case 73: param_set(P_E1_A, val); break;
     case 74: param_set(P_F_CUT, val); break;
     case 75: param_set(P_E1_D, val); break;
-    case 91: param_set(P_REV_MIX, val); break;
-    case 93: param_set(P_CHO_MIX, val); break;
-    case 94: param_set(P_DLY_MIX, val); break;
+    case 91: fx_mix(FX_REVERB, val); break;     /* the reverb's, the chorus's, the echo's MIX, in whatever slot */
+    case 93: fx_mix(FX_CHORUS, val); break;
+    case 94: fx_mix(FX_DELAY, val); break;
     case 120: case 123: ev_put(EV_PANIC, 0, 0); break;
     default: break;
     }
@@ -231,6 +351,7 @@ static void midi(uint32_t st, uint32_t d1, uint32_t d2)
 }
 
 /* ---- the panel */
+static char wave_msg[12];
 static void say(const char *s)
 {
     ui_s.msg = s;
@@ -272,6 +393,15 @@ static void knob(uint32_t k, int32_t clicks)
         ui_leds();
     }
     cur.p[id] = (uint8_t)nv;
+    tx_param(id);
+    if (id >= P_FX1_TYPE && id < P_FX1_TYPE + 4u * NFX && !((id - P_FX1_TYPE) & 3u)) {
+        uint32_t j;                             /* another effect in the slot: its knobs where they usually start */
+        for (j = 0; j < 3u; j++) {
+            cur.p[id + 1u + j] = FXDEF[nv].def[j];
+            tx_param(id + 1u + j);
+        }
+        ui_s.d_tile = 15;
+    }
     if (!ui_s.edited)
         ui_s.d_head = 1;
     ui_s.edited = 1;
@@ -347,12 +477,14 @@ static void ui(uint32_t ev, int32_t arg)
         break;
     case HB_ENC_ALGORITHM: {
         uint32_t p = PAGES[ui_s.page].col == K_OSCB ? P_B_WAVE : P_A_WAVE;
-        int32_t nv = clampi((int32_t)cur.p[p] + arg, 0, (int32_t)AP_NTAB - 1);
+        int32_t nv = clampi((int32_t)cur.p[p] + arg, 0, (int32_t)(AP_NTAB + NUWT) - 1);
         if (nv != cur.p[p]) {
             cur.p[p] = (uint8_t)nv;
             ui_s.edited = 1;
             ui_dirty_all();
-            say(AP_WT_NAME[nv]);
+            wave_name(wave_msg, (uint32_t)nv);
+            say(wave_msg);
+            tx_param(p);
         }
         break;
     }
@@ -403,6 +535,12 @@ static void draw(uint32_t full)
             H->save(&st, sizeof st);
         }
     }
+    tx_service();
+    if (wt_dirty && !eng_active && HB_HOST_HAS(H, bank_save_n)) {   /* your tables: 6 KiB in a bank of their own */
+        wt_dirty = 0;
+        if (H->bank_save_n(1, uwt, sizeof uwt) < 0)
+            say("NOT SAVED");
+    }
     if (wt_service())
         return;                                 /* a frame of a table took this pass */
     if (ui_s.d_tile) {
@@ -449,6 +587,9 @@ static int init(const hb_host_t *h)
     }
     for (i = 0; i < NUSER; i++)
         patch_check(&user[i]);
+    if (!HB_HOST_HAS(H, bank_load_n) || H->bank_load_n(1, uwt, sizeof uwt) != (int)sizeof uwt)
+        for (i = 0; i < NUWT * AP_NF; i++)      /* no tables of your own yet: a sine in every frame */
+            uwt[i / AP_NF][(i % AP_NF) * AP_NH * 2u] = 15556;
     st.preset = 1;
     if (H->load(&st, sizeof st) || st.magic != SET_MAGIC)
         st.preset = 1;

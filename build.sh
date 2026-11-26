@@ -3,7 +3,7 @@
 # Build APLAT with fm1-dock's own build, at the commit APLAT was written against:
 #   build/aplat.dock          the module, to add to an fm1-dock already on the FM-1 (its page's console, or
 #                             fm1-dock's tools/dock.py deploy)
-#   build/aplat[-X.Y].fwsc    a firmware of its own: fm1-dock with APLAT as its only synth
+#   build/aplat[-X.Y].fwsc    a firmware of its own: fm1-dock with APLAT as its only synth, Bluetooth MIDI included
 #
 #   ./build.sh [--release X.Y]
 #
@@ -27,6 +27,18 @@ if [ -z "$DOCK" ]; then
     fi
     git -C "$DOCK" fetch -q origin
     git -C "$DOCK" checkout -q "$DOCK_COMMIT"
+fi
+
+# A firmware of one synth ("solo") is built by fm1-dock without its Bluetooth MIDI part (HX), to leave its 40 KiB
+# to the synth. APLAT fits beside it, and its editor's link wants Bluetooth: the one line that drops HX for a solo
+# build is changed here, in the checkout made above only. If fm1-dock's build no longer has that line, stop: look.
+if [ -z "$APLAT_NO_BLE" ]; then
+    if grep -q 'if a.no_ble or a.pack or a.name:' "$DOCK/tools/build.py"; then
+        sed -i.orig 's/if a.no_ble or a.pack or a.name:/if a.no_ble or a.pack:/' "$DOCK/tools/build.py"
+    elif ! grep -q 'if a.no_ble or a.pack:' "$DOCK/tools/build.py"; then
+        echo "build.sh: fm1-dock's tools/build.py has changed: cannot keep Bluetooth MIDI (APLAT_NO_BLE=1 builds without)"
+        exit 1
+    fi
 fi
 
 mkdir -p build

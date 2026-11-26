@@ -1,0 +1,584 @@
+<!DOCTYPE html>
+<!-- SPDX-License-Identifier: GPL-3.0-only
+     APLAT's editor. Copyright (C) 2026 Hugo Gilbert. One file: the synth itself (aplat/aplat.c as WebAssembly, with
+     fm1-dock's screen code and font, GPL-3.0-only) is inside it. Built by tools/build_editor.py from editor/. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>APLAT editor</title>
+<style>
+:root { --bg:#1a1a1a; --card:#262626; --tile:#343434; --track:#1f1f1f; --edge:#545454; --txt:#ececec; --dim:#969696; --ink:#121212; --warn:#ff5046;
+  --play:#ff9428; --osca:#ffac30; --oscb:#38c4f0; --mix:#ecdc46; --filt:#ff6068; --env:#68d66c; --lfo:#b28cff; --mod:#ff7ac4; --arp:#34d6b2; --fx:#5e9cff; --voice:#c8c8c8; }
+* { box-sizing:border-box; }
+html, body { margin:0; background:var(--bg); color:var(--txt); font:13px/1.3 ui-sans-serif, system-ui, "Segoe UI", Helvetica, Arial, sans-serif; }
+button, select, input { font:inherit; color:inherit; }
+button { background:var(--tile); border:0; padding:6px 10px; cursor:pointer; text-transform:uppercase; letter-spacing:.04em; font-size:11px; }
+button:hover { background:var(--edge); }
+button.on { background:var(--play); color:var(--ink); }
+button:disabled { opacity:.4; cursor:default; }
+select, input[type=text] { background:var(--tile); border:0; padding:5px 6px; min-width:0; }
+select:focus, input:focus, button:focus-visible, .bar:focus-visible { outline:2px solid var(--txt); outline-offset:-2px; }
+header { display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding:8px 10px; background:var(--card); position:sticky; top:0; z-index:5; }
+header .logo { background:var(--play); color:var(--ink); font-weight:700; letter-spacing:.12em; padding:6px 12px; }
+header .sp { flex:1; }
+header label { color:var(--dim); font-size:11px; text-transform:uppercase; letter-spacing:.04em; }
+#name { width:13ch; text-transform:uppercase; }
+#status { color:var(--dim); font-size:12px; padding:0 4px; min-width:16ch; }
+main { display:grid; grid-template-columns:504px 1fr; gap:10px; padding:10px; align-items:start; }
+@media (max-width:1100px) { main { grid-template-columns:1fr; } }
+.left { display:flex; flex-direction:column; gap:10px; position:sticky; top:52px; }
+@media (max-width:1100px) { .left { position:static; } }
+#screen { width:480px; height:480px; image-rendering:pixelated; background:#000; display:block; }
+.panel { display:grid; grid-template-columns:repeat(6, 1fr); gap:4px; }
+.panel button { padding:7px 2px; }
+.panel .enc { display:flex; gap:2px; grid-column:span 2; }
+.panel .enc span { flex:1; background:var(--track); color:var(--dim); font-size:10px; text-transform:uppercase; display:flex; align-items:center; justify-content:center; letter-spacing:.04em; }
+.panel .enc button { padding:7px 9px; }
+.cards { display:grid; grid-template-columns:repeat(auto-fill, minmax(292px, 1fr)); gap:10px; }
+.card { background:var(--card); }
+.card.wide { grid-column:1 / -1; }
+.card h2 { margin:0; padding:6px 10px; font-size:12px; letter-spacing:.1em; color:var(--ink); background:var(--c); font-weight:700; }
+.card .body { padding:8px; display:grid; grid-template-columns:repeat(4, 1fr); gap:6px; }
+.card.wide .body { grid-template-columns:1fr; }
+.p { background:var(--tile); padding:6px; min-width:0; }
+.p .l { color:var(--dim); font-size:10px; letter-spacing:.06em; text-transform:uppercase; white-space:nowrap; overflow:hidden; }
+.p .v { font:12px ui-monospace, Menlo, Consolas, monospace; margin:2px 0 5px; white-space:nowrap; overflow:hidden; height:16px; }
+.p select { width:100%; margin-top:3px; background:var(--track); font-size:12px; padding:4px 3px; appearance:none; -webkit-appearance:none; cursor:pointer; }
+.bar { height:14px; background:var(--track); position:relative; cursor:ew-resize; touch-action:none; }
+.bar i { position:absolute; top:0; bottom:0; background:var(--c); }
+.bar.mid::after { content:""; position:absolute; left:calc(50% - 1px); top:-2px; bottom:-2px; width:2px; background:var(--edge); }
+.p.off { opacity:.3; }
+canvas.wave { grid-column:1 / -1; width:100%; height:64px; background:var(--track); display:block; }
+.row { display:grid; gap:6px; align-items:stretch; }
+.row.mx { grid-template-columns:22px 1fr 1fr 1.4fr; }
+.row.fxr { grid-template-columns:22px 1.1fr 1fr 1fr 1fr; }
+.row .n { background:var(--c); color:var(--ink); font-weight:700; display:flex; align-items:center; justify-content:center; }
+.row .p.sel { display:flex; align-items:center; padding:4px; }
+.row .p.sel select { margin:0; }
+#keys { display:flex; height:86px; user-select:none; touch-action:none; position:relative; background:var(--card); }
+#keys .k { flex:1; background:#d8d8d8; margin-right:1px; }
+#keys .k.b { background:var(--ink); flex:0 0 0; width:0; position:relative; z-index:2; margin:0; }
+#keys .k.b::after { content:""; position:absolute; left:-9px; width:18px; top:0; height:54px; background:#111; }
+#keys .k.down, #keys .k.b.down::after { background:var(--play); }
+.tools { background:var(--card); padding:8px; display:flex; flex-wrap:wrap; gap:6px; align-items:center; }
+.tools h3 { margin:0 6px 0 0; font-size:11px; letter-spacing:.1em; color:var(--dim); font-weight:600; width:100%; }
+small { color:var(--dim); }
+a { color:var(--oscb); }
+</style>
+</head>
+<body>
+<header>
+  <span class="logo">APLAT</span>
+  <select id="preset" title="Factory sounds"></select>
+  <input id="name" type="text" maxlength="11" spellcheck="false" title="The sound's name">
+  <button id="bundo" title="Undo (Ctrl+Z)">Undo</button><button id="bredo" title="Redo (Ctrl+Y)">Redo</button>
+  <button id="bopen">Open</button><button id="bsave">Save</button><button id="bshare" title="A link that holds this sound">Link</button>
+  <span class="sp"></span>
+  <span id="status"></span>
+  <button id="bsound" title="Play the synth in this page">Sound off</button>
+</header>
+<main>
+  <div class="left">
+    <canvas id="screen" width="240" height="240" title="The FM-1's screen, drawn by the same code"></canvas>
+    <div class="panel" id="panel"></div>
+    <div id="keys"></div>
+    <div class="tools">
+      <h3>FM-1 (MIDI: USB, DIN or Bluetooth)</h3>
+      <button id="bmidi">Connect</button>
+      <label>to</label><select id="mout"></select>
+      <label>from</label><select id="min"></select>
+      <button id="blink" title="Every change here goes to the FM-1, and its knobs come back">Live off</button>
+      <button id="bget">Get sound</button><button id="bsend">Send sound</button>
+      <select id="uslot" title="User sound on the FM-1"></select><button id="bstore">Store there</button>
+      <label><input type="checkbox" id="slow"> slow link (Bluetooth)</label>
+      <label><input type="checkbox" id="thru" checked> MIDI in plays this page</label>
+    </div>
+    <div class="tools">
+      <h3>Wavetables of your own (USER 1 to 3): a WAV of 2048-sample frames, or one cycle</h3>
+      <select id="wslot"><option value="0">USER 1</option><option value="1">USER 2</option><option value="2">USER 3</option></select>
+      <button id="bwav">Import WAV</button><button id="bwsend">Send table to FM-1</button>
+      <small id="winfo"></small>
+    </div>
+    <small>APLAT is free software (GPL-3.0). This page is the synth's own code in WebAssembly: what you hear and the screen are what the FM-1 does, but for its converter and its speaker. Nothing leaves your computer.</small>
+  </div>
+  <div class="cards" id="cards"></div>
+</main>
+<input type="file" id="fopen" accept=".json,.aplat" hidden><input type="file" id="fwav" accept=".wav,audio/wav" hidden>
+<script>
+"use strict";
+const WASM_B64 = "/*WASM_BASE64*/";
+const $ = id => document.getElementById(id);
+let W, NP, PATCH, PSIZE, ids = [], ix = {}, shadow, t0 = performance.now();
+const now = () => (performance.now() - t0) | 0;
+const mem8 = () => new Uint8Array(W.memory.buffer);
+const cstr = p => { const m = mem8(); let s = ""; while (m[p]) s += String.fromCharCode(m[p++]); return s; };
+const get = i => mem8()[PATCH + i];
+const status = s => { $("status").textContent = s; };
+
+/* ---- the sound's parameters: every control is built from what the synth says of them */
+const controls = [];                               // per parameter: functions that show its value again
+const SECT = [
+  ["OSC A", "osca", ["A_WAVE", "A_POS", "A_WMODE", "A_WARP", "A_OCT", "A_SEMI", "A_FINE", "A_LVL", "A_UNI", "A_DET", "A_SPR", "A_PAN"], 0],
+  ["OSC B", "oscb", ["B_WAVE", "B_POS", "B_WMODE", "B_WARP", "B_OCT", "B_SEMI", "B_FINE", "B_LVL", "B_UNI", "B_DET", "B_SPR", "B_PAN"], 1],
+  ["FILTER", "filt", ["F_TYPE", "F_CUT", "F_RES", "F_ENV", "F_KEY", "F_DRV", "F_VEL", "F_VAR"]],
+  ["MIX", "mix", ["SUB_WAVE", "SUB_OCT", "SUB_LVL", "SUB_DIR", "NZ_TYPE", "NZ_LVL", "VOL", "VSPREAD"]],
+  ["ENV 1 AMP", "env", ["E1_A", "E1_D", "E1_S", "E1_R"]], ["ENV 2", "env", ["E2_A", "E2_D", "E2_S", "E2_R"]],
+  ["ENV 3", "env", ["E3_A", "E3_D", "E3_S", "E3_R"]],
+  ["LFO 1", "lfo", ["L1_SHAPE", "L1_RATE", "L1_SYNC", "L1_FADE"]], ["LFO 2", "lfo", ["L2_SHAPE", "L2_RATE", "L2_SYNC", "L2_FADE"]],
+  ["LFO 3 ALL", "lfo", ["L3_SHAPE", "L3_RATE", "L3_SYNC", "L3_FADE"]],
+  ["MACROS", "play", ["M1", "M2", "M3", "M4"]],
+  ["VOICE", "voice", ["MODE", "GLIDE", "BEND", "VELSENS"]],
+  ["ARP", "arp", ["ARP_MODE", "ARP_RATE", "ARP_GATE", "ARP_OCT", "ARP_SWING", "ARP_LATCH", "TEMPO"]],
+];
+const el = (tag, cls, txt) => { const e = document.createElement(tag); if (cls) e.className = cls; if (txt != null) e.textContent = txt; return e; };
+
+function makeParam(i, opts = {}) {
+  const max = W.w_max(i), box = el("div", "p" + (opts.sel ? " sel" : ""));
+  const show = [];
+  if (W.w_is_list(i)) {
+    const s = el("select");
+    for (let v = 0; v <= max; v++) s.add(new Option(cstr(W.w_text(i, v)), v));
+    s.onchange = () => setParam(i, +s.value);
+    if (!opts.sel) box.append(Object.assign(el("div", "l"), { textContent: cstr(W.w_name(i)) }));
+    box.append(s);
+    show.push(() => { s.value = get(i); });
+  } else {
+    const l = el("div", "l"), v = el("div", "v"), bar = el("div", "bar"), fill = el("i");
+    bar.tabIndex = 0;
+    bar.append(fill);
+    box.append(l, v, bar);
+    const draw = () => {
+      const x = get(i), name = cstr(W.w_name(i));
+      l.textContent = name;
+      box.classList.toggle("off", !name);
+      v.textContent = cstr(W.w_text(i, x));
+      if (W.w_bipolar(i)) {
+        const c = W.w_centre(i), half = Math.max(max - c, c) || 1, d = (x - c) / half * 50;
+        bar.classList.add("mid");
+        fill.style.left = (d < 0 ? 50 + d : 50) + "%";
+        fill.style.width = Math.max(Math.abs(d), .6) + "%";
+      } else {
+        bar.classList.remove("mid");
+        fill.style.left = "0";
+        fill.style.width = (max ? x / max * 100 : 0) + "%";
+      }
+    };
+    let drag = null;
+    bar.onpointerdown = e => { bar.setPointerCapture(e.pointerId); drag = { x: e.clientX, v: get(i) }; bar.focus(); };
+    bar.onpointermove = e => {
+      if (!drag) return;
+      const w = bar.clientWidth || 100, k = e.shiftKey ? .25 : 1;
+      setParam(i, Math.round(drag.v + (e.clientX - drag.x) / w * max * k));
+    };
+    bar.onpointerup = bar.onpointercancel = () => { drag = null; };
+    bar.ondblclick = () => setParam(i, W.w_def(i));
+    bar.onwheel = e => { e.preventDefault(); setParam(i, get(i) + (e.deltaY < 0 ? 1 : -1)); };
+    bar.onkeydown = e => {
+      const d = { ArrowRight: 1, ArrowUp: 1, ArrowLeft: -1, ArrowDown: -1, PageUp: 10, PageDown: -10 }[e.key];
+      if (d) { e.preventDefault(); setParam(i, get(i) + d); }
+    };
+    show.push(draw);
+  }
+  (controls[i] = controls[i] || []).push(...show);
+  return box;
+}
+
+function card(title, colour, wide) {
+  const c = el("section", "card" + (wide ? " wide" : "")), b = el("div", "body");
+  c.style.setProperty("--c", `var(--${colour})`);
+  c.append(el("h2", null, title), b);
+  $("cards").append(c);
+  return b;
+}
+
+const waves = [];
+function build() {
+  for (const [title, colour, list, wave] of SECT) {
+    const b = card(title, colour);
+    if (wave != null) { const cv = el("canvas", "wave"); cv.width = 480; cv.height = 128; b.append(cv); waves[wave] = cv; }
+    for (const id of list) b.append(makeParam(ix[id]));
+  }
+  let b = card("MATRIX", "mod", true);
+  for (let s = 0; s < 8; s++) {
+    const r = el("div", "row mx");
+    r.append(el("div", "n", s + 1), makeParam(ix.X1_SRC + 3 * s, { sel: 1 }), makeParam(ix.X1_DST + 3 * s, { sel: 1 }), makeParam(ix.X1_AMT + 3 * s));
+    b.append(r);
+  }
+  b = card("EFFECTS: seven slots in a row, an effect runs once", "fx", true);
+  for (let s = 0; s < 7; s++) {
+    const r = el("div", "row fxr"), t = ix.FX1_TYPE + 4 * s;
+    r.append(el("div", "n", s + 1), makeParam(t, { sel: 1 }), makeParam(t + 1), makeParam(t + 2), makeParam(t + 3));
+    b.append(r);
+  }
+  const sel = $("preset");
+  for (let i = 0; i < W.w_nfactory(); i++) sel.add(new Option(`F${String(i + 1).padStart(2, "0")} ${cstr(W.w_factory_name(i))}`, i));
+  for (let i = 0; i < W.w_nuser(); i++) $("uslot").add(new Option(`U${String(i + 1).padStart(2, "0")}`, i));
+}
+
+/* ---- the sound in the page and what follows a change */
+const patchBytes = () => mem8().slice(PATCH, PATCH + PSIZE);
+const nameNow = () => { const m = mem8(); let s = ""; for (let i = NP; i < PSIZE && m[PATCH + i]; i++) s += String.fromCharCode(m[PATCH + i]); return s; };
+function refresh(only) {
+  const list = only == null ? controls.keys() : only;
+  for (const i of list) for (const f of controls[i] || []) f();
+  if (document.activeElement !== $("name")) $("name").value = nameNow();
+  drawWaves();
+}
+function drawWaves() {
+  waves.forEach((cv, o) => {
+    const g = cv.getContext("2d"), w = new Int8Array(W.memory.buffer, W.w_wave(o), 240);
+    g.fillStyle = "#1f1f1f"; g.fillRect(0, 0, 480, 128);
+    g.fillStyle = getComputedStyle(document.documentElement).getPropertyValue(o ? "--oscb" : "--osca");
+    for (let x = 0; x < 240; x++) { const y = w[x] * 58 / 127; g.fillRect(x * 2, y > 0 ? 64 - y : 64, 2, Math.abs(y) || 1); }
+  });
+}
+/* after anything changed the sound: show it, remember it for undo, tell the FM-1 what differs */
+let undo = [], redo = [], undoTimer = 0;
+function sync(from) {
+  const p = patchBytes(), diff = [];
+  for (let i = 0; i < NP; i++) if (p[i] !== shadow[i]) diff.push(i);
+  let nameDiff = false;
+  for (let i = NP; i < PSIZE; i++) if (p[i] !== shadow[i]) nameDiff = true;
+  if (!diff.length && !nameDiff) return;
+  const before = shadow;
+  shadow = p;
+  refresh(diff.some(i => i >= ix.FX1_TYPE && i < ix.FX1_TYPE + 28) || diff.length > 8 ? null : diff);
+  if (from !== "undo") {
+    if (!undoTimer) { undo.push(before); if (undo.length > 100) undo.shift(); redo = []; }
+    clearTimeout(undoTimer);
+    undoTimer = setTimeout(() => { undoTimer = 0; }, 500);
+  }
+  if (live && from !== "midi") { for (const i of diff) nrpn(i, p[i], true); if (nameDiff) sendName(); }
+  try { localStorage.setItem("aplat.sound", btoa(String.fromCharCode(...p))); } catch (e) { /* no storage: nothing kept */ }
+}
+function setParam(i, v) {
+  v = Math.max(0, Math.min(W.w_max(i), v | 0));
+  if (get(i) === v) return;
+  mem8()[PATCH + i] = v;
+  if (i >= ix.FX1_TYPE && i < ix.FX1_TYPE + 28 && !((i - ix.FX1_TYPE) & 3))      // another effect: its knobs where they start
+    for (let k = 0; k < 3; k++) mem8()[PATCH + i + 1 + k] = W.w_fx_def(v, k);
+  W.w_changed();
+  sync();
+}
+function setPatch(bytes, from) {
+  mem8().set(bytes.subarray(0, PSIZE), PATCH);
+  W.w_hush();
+  W.w_changed();
+  sync(from);
+}
+function step(a, b) {
+  if (!a.length) return;
+  b.push(patchBytes());
+  setPatch(a.pop(), "undo");
+}
+
+/* ---- sound */
+let ac = null, node = null;
+function sound(on) {
+  if (on && !ac) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    try { ac = new AC({ sampleRate: 44100, latencyHint: "interactive" }); } catch (e) { ac = new AC(); }
+    node = ac.createScriptProcessor(1024, 0, 2);
+    node.onaudioprocess = e => {
+      const l = e.outputBuffer.getChannelData(0), r = e.outputBuffer.getChannelData(1);
+      for (let o = 0; o < l.length; o += 256) {
+        const b = new Int32Array(W.memory.buffer, W.w_render(now()), 512);
+        for (let i = 0; i < 256; i++) { l[o + i] = b[2 * i] / 32768; r[o + i] = b[2 * i + 1] / 32768; }
+      }
+    };
+    node.connect(ac.destination);
+  }
+  if (ac) on ? ac.resume() : ac.suspend();
+  $("bsound").textContent = on ? "Sound on" : "Sound off";
+  $("bsound").classList.toggle("on", on);
+}
+const soundOn = () => ac && ac.state === "running";
+function note(key, vel) { if (key >= 0 && key < 128) W.w_midi(vel ? 0x90 : 0x80, key, vel); }
+
+/* ---- the screen and the panel */
+const BTN = { PLAY: 12, EDIT: 6, SEL: 3, ENV: 4, LFO: 5, SEQ: 11, ARP: 10, FX: 2, GLO: 7, REC: 13, SAVE: 9 };
+const ENC = { SELECT: 0, WAVE: 1, "KNOB 1": 2, "KNOB 2": 3, "KNOB 3": 4, "KNOB 4": 5, PRESETS: 6 };
+function panel() {
+  const p = $("panel");
+  for (const [n, id] of Object.entries(BTN)) {
+    const b = el("button", null, n);
+    b.dataset.led = id;
+    b.onclick = () => { W.w_ui(0x01000000 | id, 0); W.w_ui(0x02000000 | id, 0); afterPanel(); };
+    p.append(b);
+  }
+  p.append(el("span"));
+  for (const [n, id] of Object.entries(ENC)) {
+    const d = el("div", "enc"), a = el("button", null, "◀"), b = el("button", null, "▶");
+    a.onclick = e => { W.w_ui(0x03000000 | id, e.shiftKey ? -8 : -1); afterPanel(); };
+    b.onclick = e => { W.w_ui(0x03000000 | id, e.shiftKey ? 8 : 1); afterPanel(); };
+    a.title = b.title = "Shift: 8 clicks";
+    d.append(a, el("span", null, n), b);
+    p.append(d);
+  }
+}
+function afterPanel() { $("preset").value = W.w_preset_now() < W.w_nfactory() ? W.w_preset_now() : ""; sync(); }
+const scr = $("screen").getContext("2d"), img = scr.createImageData(240, 240);
+let frames = 0;
+function frame() {
+  let fb = 0;
+  for (let k = 0; k < 8; k++) fb = W.w_draw(now());          // (a strip a pass, as on the FM-1)
+  const px = new Uint16Array(W.memory.buffer, fb, 57600), d = img.data;
+  for (let i = 0, j = 0; i < 57600; i++, j += 4) {
+    const c = px[i];
+    d[j] = (c >> 11) * 255 / 31; d[j + 1] = (c >> 5 & 63) * 255 / 63; d[j + 2] = (c & 31) * 255 / 31; d[j + 3] = 255;
+  }
+  scr.putImageData(img, 0, 0);
+  if (!soundOn()) W.w_render(now());                         // silent: the synth still runs (its envelopes end)
+  if (++frames % 6 === 0) drawWaves();                       // (a table picked is built over a few passes)
+  const leds = W.w_leds();
+  for (const b of $("panel").querySelectorAll("button[data-led]")) b.classList.toggle("on", !!(leds >> b.dataset.led & 1));
+  requestAnimationFrame(frame);
+}
+
+/* ---- keys: the mouse, a touch, the computer's keyboard */
+let base = 48;
+const held = new Map();
+function keys() {
+  const k = $("keys");
+  for (let n = 0; n < 37; n++) { const d = el("div", "k" + ([1, 3, 6, 8, 10].includes(n % 12) ? " b" : "")); d.dataset.n = n; k.append(d); }
+  const at = e => { const t = document.elementFromPoint(e.clientX, e.clientY); return t && t.dataset.n != null && t.parentNode === k ? +t.dataset.n : -1; };
+  const move = e => {
+    const n = at(e), was = held.get("p" + e.pointerId);
+    if (n === was) return;
+    if (was != null && was >= 0) keyUp(was);
+    held.set("p" + e.pointerId, n);
+    if (n >= 0) keyDown(n, 100);
+  };
+  k.onpointerdown = e => { k.setPointerCapture(e.pointerId); sound(true); move(e); };
+  k.onpointermove = e => { if (held.has("p" + e.pointerId)) move(e); };
+  k.onpointerup = k.onpointercancel = e => { const was = held.get("p" + e.pointerId); if (was >= 0) keyUp(was); held.delete("p" + e.pointerId); };
+  const row = "awsedftgyhujkolp;'";
+  addEventListener("keydown", e => {
+    if (e.target.matches("input, select") || e.ctrlKey || e.metaKey || e.altKey) return;
+    if (e.key === "z" || e.key === "x") { base = Math.max(0, Math.min(84, base + (e.key === "z" ? -12 : 12))); status("keys from C" + (base / 12 - 1)); return; }
+    const n = row.indexOf(e.key.toLowerCase());
+    if (n >= 0 && !e.repeat && !held.has(e.key)) { held.set(e.key, n + 12); sound(true); keyDown(n + 12, 100); }
+  });
+  addEventListener("keyup", e => { if (held.has(e.key)) { keyUp(held.get(e.key)); held.delete(e.key); } });
+}
+function keyDown(n, v) { note(base + n, v); const d = $("keys").children[n]; if (d) d.classList.add("down"); if (live && thruOut()) send([0x90, base + n, v]); }
+function keyUp(n) { note(base + n, 0); const d = $("keys").children[n]; if (d) d.classList.remove("down"); if (live && thruOut()) send([0x80, base + n, 0]); }
+
+/* ---- MIDI: the FM-1. Every parameter is an NRPN (its number the parameter's), both ways */
+let midi = null, out = null, live = false, q = [], pump = 0, rx = { p: 0, d: 0 }, expect = null;
+const thruOut = () => !!out;                      // (with Live on, the page's keys play the FM-1 too)
+function send(m) { q.push(m); if (!pump) pump = setInterval(drain, 1); }
+function nrpn(p, v, coalesce) {
+  if (coalesce) { const h = q.find(m => m.nr === p); if (h) { h.v = v; return; } }
+  const m = { nr: p, v }; q.push(m);
+  if (!pump) pump = setInterval(drain, 1);
+}
+let lastSent = 0;
+function drain() {
+  if (!q.length) { clearInterval(pump); pump = 0; return; }
+  const gap = $("slow").checked ? 12 : 3;                    // an NRPN is four messages: the FM-1 takes 64 at a time
+  if (performance.now() - lastSent < gap) return;
+  lastSent = performance.now();
+  const m = q.shift();
+  if (!out) return;
+  if (m.nr != null) { out.send([0xB0, 99, m.nr >> 7]); out.send([0xB0, 98, m.nr & 127]); out.send([0xB0, 6, m.v >> 7 & 127]); out.send([0xB0, 38, m.v & 127]); }
+  else out.send(m);
+  if (q.length % 64 === 0 && q.length) status(`sending: ${q.length} to go`);
+  if (!q.length) status("sent");
+}
+function sendName() { const n = nameNow(); for (let i = 0; i < 11; i++) nrpn(1000 + i, n.charCodeAt(i) || 0, true); }
+function sendAll(store) {                          // everything, then (kept as a user sound, then) asked back to compare
+  const p = patchBytes();
+  for (let i = 0; i < NP; i++) nrpn(i, p[i]);
+  sendName();
+  if (store != null) nrpn(2001, store);
+  expect = "check";
+  nrpn(2000, 0);
+}
+function fromDevice(p, v) {
+  const m = mem8();
+  if (p < NP) { if (expect !== "check") { m[PATCH + p] = Math.min(v, W.w_max(p)); W.w_changed(); pending = true; } else check[p] = v; }
+  else if (p >= 1000 && p < 1011) { if (expect !== "check") { m[PATCH + NP + p - 1000] = v; pending = true; } }
+  else if (p === 2011) {                                    // the end of "everything": the sum of the parameters
+    if (expect === "check") {
+      const mine = patchBytes(), bad = [];
+      for (let i = 0; i < NP; i++) if (check[i] !== mine[i]) bad.push(i);
+      expect = null; check = [];
+      if (bad.length && retries++ < 3) { status(`${bad.length} did not arrive: again`); for (const i of bad) nrpn(i, mine[i]); expect = "check"; nrpn(2000, 0); }
+      else { status(bad.length ? "the FM-1 differs" : "the FM-1 has this sound"); retries = 0; }
+    } else {
+      let s = 0; const mine = patchBytes();
+      for (let i = 0; i < NP; i++) s += mine[i];
+      if ((s & 0x3FFF) !== v && retries++ < 3) { status("some of it was lost: asking again"); nrpn(2000, 0); }
+      else { status((s & 0x3FFF) === v ? "got the FM-1's sound" : "the FM-1's sound came incomplete"); retries = 0; }
+    }
+  } else if (p === 2012) status(v ? "the FM-1 has the table" : "the table did not arrive whole: send it again");
+  else if (p === 2013 && v !== 1) status("this page and the FM-1's APLAT are of different versions");
+}
+let pending = false, check = [], retries = 0;
+setInterval(() => { if (pending) { pending = false; sync("midi"); } }, 40);
+function midiIn(e) {
+  const [st, d1, d2] = e.data, t = st & 0xF0;
+  if (st >= 0xF0) return;
+  if (t === 0xB0 && (d1 === 99 || d1 === 98 || d1 === 6 || d1 === 38)) {
+    if (d1 === 99) rx.p = d2 << 7 | (rx.p & 127); else if (d1 === 98) rx.p = (rx.p & ~127) | d2; else if (d1 === 6) rx.d = d2 << 7;
+    else fromDevice(rx.p, rx.d | d2);
+    return;
+  }
+  if ($("thru").checked) { W.w_midi(st, d1, d2 || 0); if (t === 0x90 && d2) sound(true); }
+}
+async function connect() {
+  if (!navigator.requestMIDIAccess) { status("this browser has no Web MIDI (Chrome or Edge have)"); return; }
+  try { midi = await navigator.requestMIDIAccess({ sysex: false }); } catch (e) { status("MIDI was refused"); return; }
+  const fill = () => {
+    const keepO = $("mout").value, keepI = $("min").value;
+    $("mout").length = 0; $("min").length = 0;
+    $("min").add(new Option("every input", "*"));
+    for (const o of midi.outputs.values()) $("mout").add(new Option(o.name, o.id));
+    for (const i of midi.inputs.values()) { $("min").add(new Option(i.name, i.id)); i.onmidimessage = e => { if ($("min").value === "*" || $("min").value === i.id) midiIn(e); }; }
+    const fm = [...midi.outputs.values()].find(o => /FM-?1|DOCK|APLAT/i.test(o.name));
+    $("mout").value = keepO || (fm ? fm.id : $("mout").value);
+    if (keepI) $("min").value = keepI;
+    out = midi.outputs.get($("mout").value) || null;
+    status(out ? "MIDI: " + out.name : "no MIDI output");
+  };
+  midi.onstatechange = fill;
+  $("mout").onchange = () => { out = midi.outputs.get($("mout").value) || null; };
+  fill();
+}
+
+/* ---- files, links */
+function download(name, text) { const a = el("a"); a.href = URL.createObjectURL(new Blob([text], { type: "application/json" })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
+function toJSON() { const p = patchBytes(), o = {}; ids.forEach((id, i) => { if (id) o[id] = p[i]; }); return JSON.stringify({ format: "aplat-sound", version: 1, name: nameNow(), params: o }, null, 1); }
+function fromJSON(text) {
+  const j = JSON.parse(text);
+  if (j.format !== "aplat-sound" || !j.params) throw new Error("not an APLAT sound");
+  W.w_preset(0);                                             // what the file does not say is as in INIT
+  const p = patchBytes();
+  for (const [id, v] of Object.entries(j.params)) if (id in ix) p[ix[id]] = Math.max(0, Math.min(W.w_max(ix[id]), v | 0));
+  const n = String(j.name || "").toUpperCase().replace(/[^ -_]/g, "").slice(0, 11);
+  for (let i = 0; i < 12; i++) p[NP + i] = n.charCodeAt(i) || 0;
+  setPatch(p);
+}
+const b64u = b => btoa(String.fromCharCode(...b)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+const unb64u = s => Uint8Array.from(atob(s.replace(/-/g, "+").replace(/_/g, "/")), c => c.charCodeAt(0));
+
+/* ---- a table of one's own from a WAV: 8 frames, 64 harmonics each, as the built-in ones are kept */
+const userTables = [null, null, null];
+function wavSamples(buf) {
+  const v = new DataView(buf);
+  if (v.getUint32(0, false) !== 0x52494646 || v.getUint32(8, false) !== 0x57415645) throw new Error("not a WAV file");
+  let o = 12, fmt = null, data = null;
+  while (o + 8 <= v.byteLength) {
+    const id = v.getUint32(o, false), n = v.getUint32(o + 4, true);
+    if (id === 0x666d7420) fmt = { tag: v.getUint16(o + 8, true), ch: v.getUint16(o + 10, true), bits: v.getUint16(o + 22, true),
+                                   sub: n >= 26 ? v.getUint16(o + 32, true) : 1 };
+    if (id === 0x64617461) data = { o: o + 8, n: Math.min(n, v.byteLength - o - 8) };
+    o += 8 + n + (n & 1);
+  }
+  if (!fmt || !data) throw new Error("a WAV without sound");
+  if (fmt.tag === 0xFFFE) fmt.tag = fmt.sub === 3 ? 3 : 1;         // (the extensible kind: its real format is further in)
+  const bytes = fmt.bits / 8, frames = Math.floor(data.n / bytes / fmt.ch), x = new Float32Array(frames);
+  for (let i = 0; i < frames; i++) {
+    const p = data.o + i * bytes * fmt.ch;                   // (the first channel)
+    x[i] = fmt.tag === 3 ? (fmt.bits === 64 ? v.getFloat64(p, true) : v.getFloat32(p, true))
+         : bytes === 1 ? (v.getUint8(p) - 128) / 128 : bytes === 2 ? v.getInt16(p, true) / 32768
+         : bytes === 3 ? ((v.getUint8(p) | v.getUint8(p + 1) << 8 | v.getInt8(p + 2) << 16)) / 8388608 : v.getInt32(p, true) / 2147483648;
+  }
+  return x;
+}
+function tableFrom(x) {
+  const N = 2048, nf = Math.floor(x.length / N), spec = new Int16Array(1024);
+  const frameAt = k => {
+    const f = new Float32Array(N);
+    if (nf < 1) { for (let i = 0; i < N; i++) { const t = i / N * x.length, a = Math.floor(t); f[i] = x[a] + ((x[(a + 1) % x.length] - x[a]) * (t - a)); } }
+    else { const at = nf > 1 ? k * (nf - 1) / 7 : 0, a = Math.floor(at), b = Math.min(a + 1, nf - 1), m = at - a;
+      for (let i = 0; i < N; i++) f[i] = x[a * N + i] * (1 - m) + x[b * N + i] * m; }
+    return f;
+  };
+  for (let k = 0; k < 8; k++) {
+    const f = frameAt(k), S = new Float64Array(64), C = new Float64Array(64);
+    for (let h = 1; h <= 64; h++) {
+      let s = 0, c = 0; const w = 2 * Math.PI * h / N;
+      for (let i = 0; i < N; i++) { s += f[i] * Math.sin(w * i); c += f[i] * Math.cos(w * i); }
+      S[h - 1] = 2 * s / N; C[h - 1] = 2 * c / N;
+    }
+    let e = 0, peak = 0;
+    for (let h = 0; h < 64; h++) e += (S[h] * S[h] + C[h] * C[h]) / 2;
+    for (let i = 0; i < 512; i++) { let y = 0; for (let h = 0; h < 64; h++) { const a = 2 * Math.PI * (h + 1) * i / 512; y += S[h] * Math.sin(a) + C[h] * Math.cos(a); } peak = Math.max(peak, Math.abs(y)); }
+    let g = e > 1e-12 ? 11000 / Math.sqrt(e) : 0;
+    if (peak * g > 28000) g = 28000 / peak;
+    for (let h = 0; h < 64; h++) for (const [j, val] of [[0, S[h]], [1, C[h]]]) {
+      let r = Math.round(val * g);
+      if (r >= -64 && r <= -49) r = r > -57 ? -48 : -65;     // (values the FM-1's build cannot hold, tools/gen_tables.py)
+      spec[(k * 64 + h) * 2 + j] = r;
+    }
+  }
+  return spec;
+}
+function setUserTable(slot, spec) {
+  userTables[slot] = spec;
+  new Int16Array(W.memory.buffer, W.w_uwt() + slot * 2048, 1024).set(spec);
+  W.w_uwt_changed(slot);
+  try { localStorage.setItem("aplat.table" + slot, b64u(new Uint8Array(spec.buffer))); } catch (e) { /* not kept */ }
+  setTimeout(drawWaves, 200);
+}
+function sendTable(slot) {
+  const spec = userTables[slot];
+  if (!spec) { status("import a WAV into this slot first"); return; }
+  if (!out) { status("connect the FM-1 first"); return; }
+  let sum = 0;
+  nrpn(2003, slot);
+  for (const s of spec) { const u = s & 0xFFFF; sum += u; nrpn(3000 + (u >> 14), u & 0x3FFF); }
+  nrpn(2005, sum & 0x3FFF);
+  status("sending the table: " + Math.round(1030 * ($("slow").checked ? 12 : 3) / 1000) + " s");
+}
+
+/* ---- start */
+async function start() {
+  const bin = Uint8Array.from(atob(WASM_B64), c => c.charCodeAt(0));
+  W = (await WebAssembly.instantiate(bin, {})).instance.exports;
+  W.w_init();
+  NP = W.w_np(); PATCH = W.w_patch(); PSIZE = W.w_patch_size();
+  for (let i = 0; i < NP; i++) { ids[i] = cstr(W.w_id(i)); ix[ids[i]] = i; }
+  build(); panel(); keys();
+  for (let s = 0; s < 3; s++) try { const t = localStorage.getItem("aplat.table" + s); if (t) setUserTable(s, new Int16Array(unb64u(t).buffer)); } catch (e) { /* none kept */ }
+  shadow = patchBytes();
+  let first = null;
+  try { const h = location.hash.match(/^#s=([\w-]+)/); first = h ? unb64u(h[1]) : null; } catch (e) { first = null; }
+  try { if (!first) { const s = localStorage.getItem("aplat.sound"); if (s) first = Uint8Array.from(atob(s), c => c.charCodeAt(0)); } } catch (e) { /* none kept */ }
+  if (first && first.length === PSIZE) setPatch(first);
+  undo = []; redo = [];
+  refresh();
+  $("preset").value = first ? "" : W.w_preset_now();
+  $("preset").onchange = () => { W.w_preset(+$("preset").value); sync(); };
+  $("name").onchange = () => { const n = $("name").value.toUpperCase().replace(/[^ -_]/g, "").slice(0, 11), m = mem8(); for (let i = 0; i < 12; i++) m[PATCH + NP + i] = n.charCodeAt(i) || 0; W.w_changed(); sync(); };
+  $("bundo").onclick = () => step(undo, redo); $("bredo").onclick = () => step(redo, undo);
+  addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && !e.target.matches("input")) { if (e.key === "z") { e.preventDefault(); step(undo, redo); } if (e.key === "y") { e.preventDefault(); step(redo, undo); } } });
+  $("bsave").onclick = () => download((nameNow() || "sound").toLowerCase().replace(/\W+/g, "-") + ".aplat.json", toJSON());
+  $("bopen").onclick = () => $("fopen").click();
+  $("fopen").onchange = async e => { try { fromJSON(await e.target.files[0].text()); status("opened"); } catch (x) { status(x.message); } e.target.value = ""; };
+  $("bshare").onclick = async () => { location.hash = "s=" + b64u(patchBytes()); try { await navigator.clipboard.writeText(location.href); status("the link is copied"); } catch (e) { status("the link is in the address bar"); } };
+  $("bsound").onclick = () => sound(!soundOn());
+  $("bmidi").onclick = connect;
+  $("blink").onclick = () => { live = !live; $("blink").textContent = live ? "Live on" : "Live off"; $("blink").classList.toggle("on", live); if (live && out) nrpn(2000, 0); };
+  $("bget").onclick = () => { if (!out) return status("connect the FM-1 first"); expect = null; retries = 0; nrpn(2000, 0); status("asking the FM-1"); };
+  $("bsend").onclick = () => { if (!out) return status("connect the FM-1 first"); retries = 0; sendAll(); };
+  $("bstore").onclick = () => { if (!out) return status("connect the FM-1 first"); retries = 0; sendAll(+$("uslot").value); };
+  $("bwav").onclick = () => $("fwav").click();
+  $("fwav").onchange = async e => {
+    try { const f = e.target.files[0], x = wavSamples(await f.arrayBuffer()), slot = +$("wslot").value; setUserTable(slot, tableFrom(x));
+      $("winfo").textContent = `${f.name}: ${Math.max(1, Math.floor(x.length / 2048))} frame(s) in USER ${slot + 1}`; setParam(ix.A_WAVE, W.w_ntab() + slot); }
+    catch (x) { $("winfo").textContent = x.message; }
+    e.target.value = "";
+  };
+  $("bwsend").onclick = () => sendTable(+$("wslot").value);
+  requestAnimationFrame(frame);
+  status("ready");
+  window.aplat = { W, setParam, get, ix, toJSON, fromJSON, tableFrom, setUserTable, fromDevice, patchBytes, step, undo, redo, nameNow, sync, q, midiIn };
+}
+start().catch(e => { status("could not start: " + e.message); console.error(e); });
+</script>
+</body>
+</html>

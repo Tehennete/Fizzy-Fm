@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-# Copyright (C) 2026 Hugo (APLAT)
+# Copyright (C) 2026 Hugo Gilbert (APLAT)
 """APLAT's tables -> aplat/ap_gen.h.
 
 Every wavetable is original: 24 tables of 8 frames, each frame designed here as a formula (a wave in time or a
@@ -144,6 +144,94 @@ def tables():
             a[hh - 1] += w * (0.2 + 1.6 * k)
         fr.append(from_spec(a))
     t.append(("TINE", fr))
+    t += more_tables(h, odd)
+    return t
+
+
+def spec_frames(fn, ks):
+    return [from_spec(np.asarray(fn(k), float)) for k in ks]
+
+
+def more_tables(h, odd):
+    """the second set: 40 more tables, as formulas too"""
+    t = []
+    lin = np.linspace(0, 1, NF)
+    even = 1 - odd + (h == 1)
+
+    def only(hs, amps=None):
+        a = np.zeros(NH)
+        for i, hh in enumerate(hs):
+            if hh <= NH:
+                a[hh - 1] = 1.0 if amps is None else amps[i]
+        return a
+
+    # additive families: more partials come in from frame to frame
+    t.append(("SINES", [from_spec(only((1, 2, 3, 4, 5, 6, 7, 8)[:k + 1], [1 / (1 + 0.6 * j) for j in range(k + 1)])) for k in range(NF)]))
+    t.append(("ODDS", [from_spec(only((1, 3, 5, 7, 9, 11, 13, 15)[:k + 1], [1 / (1 + 0.5 * j) for j in range(k + 1)])) for k in range(NF)]))
+    t.append(("EVENS", [from_spec(only((1, 2, 4, 6, 8, 10, 12, 14)[:k + 1], [1 / (1 + 0.5 * j) for j in range(k + 1)])) for k in range(NF)]))
+    t.append(("OCTAVES", [from_spec(only((1, 2, 4, 8, 16, 32, 64), [max(0.0, 1 - abs(j - k * 6 / 7) / 2.2) + (0.3 if j == 0 else 0) for j in range(7)])) for k in range(NF)]))
+    t.append(("FIFTHS", [from_spec(only((1, 2, 3, 4, 6, 8, 12, 16, 24, 32, 48), [max(0.0, 1 - abs(j - k * 10 / 7) / 3.0) + (0.4 if j == 0 else 0) for j in range(11)])) for k in range(NF)]))
+    # shapes in time
+    t.append(("PULSE2", [np.where((x < w) | ((x > 0.5) & (x < 0.5 + w * 0.6)), 1.0, -1.0) for w in (0.25, 0.21, 0.17, 0.14, 0.11, 0.08, 0.06, 0.04)]))
+    t.append(("TRISAW", [np.where(x < p, x / p, (1 - x) / (1 - p)) * 2 - 1 for p in (0.5, 0.42, 0.34, 0.26, 0.18, 0.11, 0.05, 0.015)]))
+    t.append(("SINSYNC", [np.sin(TAU * r * x) * np.sin(np.pi * x) ** 0.5 for r in (1, 1.5, 2.25, 3, 4, 5.25, 6.5, 8)]))
+    t.append(("RESO", [np.sin(TAU * r * x) * (1 - x) ** 2 + 0.25 * np.sin(TAU * x) for r in (2, 3, 4, 6, 8, 11, 15, 20)]))
+    t.append(("PD", [np.cos(TAU * np.where(x < d, x * 0.5 / d, 0.5 + (x - d) * 0.5 / (1 - d))) for d in (0.5, 0.4, 0.31, 0.23, 0.16, 0.1, 0.055, 0.02)]))
+    idx = (0, 0.5, 1, 1.6, 2.4, 3.4, 4.6, 6)
+    t.append(("FM 1:3", [np.sin(TAU * x + i * np.sin(3 * TAU * x)) for i in idx]))
+    t.append(("FM 2:1", [np.sin(2 * TAU * x + i * np.sin(TAU * x)) for i in idx]))
+    fr = []
+    for b in (0, 0.35, 0.7, 1.0, 1.25, 1.5, 1.75, 2.0):      # feedback FM, settled by going round a few times
+        y = np.sin(TAU * x)
+        for _ in range(40):
+            y = 0.5 * y + 0.5 * np.sin(TAU * x + b * y)
+        fr.append(y)
+    t.append(("FM FB", fr))
+    t.append(("FM 3OP", [np.sin(TAU * x + i * np.sin(2 * TAU * x + 0.8 * i * np.sin(5 * TAU * x))) for i in (0, 0.4, 0.8, 1.2, 1.7, 2.2, 2.8, 3.5)]))
+    # voices
+    t.append(("CHOIR", [from_spec(formant(vow(a, b, k), 320, 2.0) * (0.6 + 0.4 * odd)) for a, b, k in
+                        (("A", "A", 0), ("A", "O", .5), ("O", "O", 0), ("O", "U", .5), ("U", "U", 0), ("U", "I", .5),
+                         ("I", "I", 0), ("I", "E", .5))]))
+    t.append(("NASAL", spec_frames(lambda c: h ** -0.8 * (0.08 + np.exp(-0.5 * ((h - c) / 1.6) ** 2) + 0.5 * np.exp(-0.5 * ((h - 2.6 * c) / 2.2) ** 2)), (3, 4, 5, 6.5, 8, 10, 12.5, 15))))
+    t.append(("THROAT", spec_frames(lambda c: h ** -1.4 * (0.1 + np.exp(-0.5 * ((h - c) / 1.2) ** 2) + 0.7 * np.exp(-0.5 * ((h - 9 + c) / 2.0) ** 2)), (1.5, 2, 2.6, 3.3, 4, 5, 6, 7.2))))
+    t.append(("GROWL", spec_frames(lambda k: h ** -0.9 * (0.05 + np.exp(-0.5 * ((h - 2 - 10 * k) / 2.0) ** 2) + np.exp(-0.5 * ((h - 26 + 16 * k) / 3.0) ** 2)) * (1 + 0.6 * np.cos(h * (1 + 3 * k))), lin)))
+    t.append(("TALK", [from_spec(formant(f, 110, 0.9)) for f in
+                       (VOW["A"], vow("A", "I", .3), vow("A", "I", .6), VOW["I"], vow("I", "U", .5), VOW["U"],
+                        vow("U", "A", .4), vow("U", "A", .8))]))
+    # instruments
+    t.append(("FLUTE", spec_frames(lambda k: only((1, 2, 3, 4, 5, 6, 7), [1, 0.10 + 0.5 * k, 0.04 + 0.35 * k, 0.02 + 0.2 * k, 0.12 * k, 0.08 * k, 0.05 * k]), lin)))
+    t.append(("PIPES", spec_frames(lambda k: only((1, 2, 3, 4, 5, 6, 8, 10, 12, 16, 20, 24), [1, 0.5, 0.25 + 0.3 * k, 0.3, 0.3 * k, 0.2 + 0.3 * k, 0.5 * k, 0.3 * k, 0.4 * k, 0.35 * k, 0.2 * k, 0.25 * k]), lin)))
+    t.append(("CELLO", spec_frames(lambda c: h ** -1.15 * (0.35 + np.exp(-0.5 * ((h - c) / 1.8) ** 2) + 0.6 * np.exp(-0.5 * ((h - 3.2 * c) / 3.5) ** 2)) * (1 - 0.5 * (h % 7 == 0)), (2, 2.5, 3, 3.6, 4.3, 5.2, 6.2, 7.5))))
+    t.append(("PIANO", spec_frames(lambda k: h ** -(2.4 - 1.5 * k) * (1 - 0.75 * (h % 8 == 0)) * np.exp(-h * (0.10 - 0.085 * k)), lin)))
+    t.append(("CLAV", spec_frames(lambda k: (np.abs(np.sin(np.pi * h * (0.12 + 0.05 * k))) + 0.05) * h ** -(0.9 - 0.4 * k), lin)))
+    t.append(("MALLET", spec_frames(lambda k: only((1, 4, 10, 17, 26), [1, 0.5 * k + 0.05, 0.4 * k * k, 0.25 * k * k, 0.15 * k ** 3]), lin)))
+    t.append(("CHIME", spec_frames(lambda k: only((2, 5, 9, 14, 20, 27, 35), [1, 0.8 - 0.3 * k, 0.3 + 0.5 * k, 0.6 * k, 0.5 * k, 0.4 * k * k, 0.3 * k * k]), lin)))
+    t.append(("GONG", [from_spec(only((1, 3, 4, 7, 11, 13, 18, 23, 29, 37, 47), [0.9, 0.5, 0.7, 0.6, 0.5 + 0.3 * k, 0.4, 0.5 * k + 0.1, 0.6 * k, 0.5 * k, 0.4 * k, 0.3 * k]), phase=rng.uniform(0, TAU, NH)) for k in lin]))
+    # spectra carved and turned
+    t.append(("HOLLOW", spec_frames(lambda c: h ** -1.0 * (1 - 0.97 * np.exp(-0.5 * ((h - c) / (1 + c * 0.3)) ** 2)), (2, 3, 4.5, 6.5, 9, 13, 18, 26))))
+    t.append(("PHASES", [from_spec(h ** -1.0, phase=k * 0.42 * (h - 1) ** 1.3) for k in range(NF)]))
+    t.append(("STEPS", [np.floor(x * n) / (n - 1) * 2 - 1 for n in (24, 16, 12, 9, 7, 5, 4, 3)]))
+    t.append(("FIN", [np.where(x < 0.5, 1 - np.exp(-x * c), np.exp(-(x - 0.5) * c) - 1) for c in (3, 5, 8, 12, 18, 26, 40, 70)]))
+    t.append(("IMPULSE", [np.exp(-0.5 * (((x + 0.5) % 1 - 0.5) / w) ** 2) - np.exp(-0.5 * ((x - 0.5) / w) ** 2) for w in (0.16, 0.11, 0.075, 0.05, 0.034, 0.023, 0.015, 0.009)]))
+    t.append(("PARABOL", [np.sign(np.sin(TAU * x)) * np.abs(np.sin(TAU * x)) ** e for e in (2.5, 1.8, 1.3, 1.0, 0.7, 0.45, 0.25, 0.1)]))
+    t.append(("PURE", [from_spec(only((1, n), [0.45, 1.0])) if n > 1 else np.sin(TAU * x) for n in (1, 2, 3, 4, 5, 7, 9, 12)]))
+    t.append(("BUZZ", spec_frames(lambda c: (h >= c) * (h < c + 10 + c * 0.6) * 1.0 + 0.5 * (h == 1), (1, 2, 4, 7, 11, 17, 26, 38))))
+    fr = []
+    grit = rng.uniform(0, 1, NH)
+    for k in range(NF):
+        a = h ** -(1.2 - 0.14 * k) * (0.15 + grit ** (3.0 - 0.3 * k))
+        a[0] = 1.0
+        fr.append(from_spec(a, phase=rng.uniform(0, TAU, NH) * (k / (NF - 1))))
+    t.append(("GRIT", fr))
+    b4 = lambda y: np.round(y * 7.5) / 7.5                   # four bits
+    t.append(("8 BIT", [b4(np.sin(TAU * x)), b4(tri()), b4(saw()), b4(pulse(0.5)), b4(pulse(0.25)), b4(pulse(0.125)),
+                        b4(np.where(x < 0.5, saw(2 * x), pulse(0.5) * 0.6)), b4(saw(3 * x) * (1 - x))]))
+    gl = rng.integers(-7, 8, (NF + 1, 16)) / 7.0
+    t.append(("GLITCH", [mix(gl[k], gl[k + 1], 0.35)[np.minimum((x * (4 + 12 * k // 7)).astype(int), 15)] for k in range(NF)]))
+    # strings by where they are plucked or bowed
+    t.append(("PLUCK", spec_frames(lambda p: np.sin(np.pi * h * p) / h ** 2, (0.5, 0.38, 0.29, 0.22, 0.16, 0.12, 0.085, 0.05))))
+    t.append(("BOWED", spec_frames(lambda p: np.abs(np.sin(np.pi * h * p)) / h * (1 + 0.8 * np.exp(-0.5 * ((h - 9) / 4.0) ** 2)), (0.5, 0.33, 0.25, 0.2, 0.143, 0.111, 0.077, 0.04))))
+    assert len(t) == 40, len(t)
     return t
 
 
@@ -220,6 +308,7 @@ def main():
     data = [(-48 if v > -57 else -65) if -64 <= v <= -49 else v for v in data]
     assert max(abs(v) for v in data) < 32768
     out.append(f"#define AP_NTAB {len(names)}u")
+    out.append("enum { " + ", ".join("T_" + "".join(c if c.isalnum() else "_" for c in n) for n in names) + " };")
     out.append("static const char *const AP_WT_NAME[AP_NTAB] = {" + ", ".join(f'"{n}"' for n in names) + "};")
     out.append("/* [table][frame][harmonic] = {sine part, cosine part}, in output units (a full wave is about +-28000) */")
     out.append(carr("AP_WT", "int16_t", data, 16))

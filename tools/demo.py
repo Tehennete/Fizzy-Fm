@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Hugo Gilbert
 """A demo of APLAT's factory sounds, rendered on a computer by the module's own code (host/host.c): a script of
 notes, key pressure, the wheel and a macro for host/run.sh.
 
@@ -116,6 +117,28 @@ for k, d in mel:
 ramp(1, 0, 127, 600, 1500)
 ramp(1, 127, 0, 2100, 600)
 t += 4200
+
+preset("VOWEL PAD")
+chord((45, 52, 57, 60, 64), 0, 5000, 90, strum=100)
+ramp(16, 0, 127, 500, 2200)
+ramp(16, 127, 30, 2700, 2000)
+t += 7500
+
+preset("COMB PLUCK")
+for i, k in enumerate([45, 52, 57, 60, 64, 60, 57, 52, 43, 50, 55, 59, 62, 59, 55, 50]):
+    note(k, i * 220, 200, 60 + (i * 29) % 60)
+t += 5000
+
+preset("PUMP PAD")
+for i, ch in enumerate((Am, F)):
+    chord(ch, i * 2000, 1950, 110)
+t += 5200
+
+preset("HOT BASS")
+for i, (k, v) in enumerate([(33, 120), (33, 80), (45, 110), (33, 127), (36, 90), (38, 110), (33, 80), (40, 127)] * 2):
+    note(k, i * 250, 210, v)
+ramp(16, 0, 120, 0, 4000, 40)
+t += 4600
 
 preset("SLOW DRONE")
 chord((38, 45, 50, 57), 0, 6000, 90, strum=400)

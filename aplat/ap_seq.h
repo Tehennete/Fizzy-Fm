@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (C) 2026 Hugo Gilbert */
 /* APLAT's clock and arpeggiator, and the notes on their way from the main loop to render(). */
 #ifndef AP_SEQ_H
 #define AP_SEQ_H

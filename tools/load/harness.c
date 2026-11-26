@@ -1,4 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
+/* Copyright (C) 2026 Hugo Gilbert */
 /* APLAT's module on a bare 32-bit RISC-V (rv32im), for tools/load/count.py: it counts the instructions a block of
  * sound takes. Not the FM-1's chip, but a 32-bit processor with a multiplier and no FPU, as it is. */
 #include <stdint.h>
@@ -27,7 +28,7 @@ static void s_blit(int32_t x, int32_t y, int32_t w, int32_t h, const uint16_t *p
 static int32_t s_tw(uint32_t b, const char *s) { (void)b; (void)s; return 0; }
 static int s_bload(void *p, uint32_t n) { (void)p; (void)n; return -1; }
 static int s_bsave(const void *p, uint32_t n) { (void)p; (void)n; return 0; }
-static const hb_host_t host = {HB_ABI, sizeof(hb_host_t), s_ms, s_ticks, s_log, s_log_u32, s_fill, s_text, s_cvb, s_fill,
+static const hb_host_t host = {HB_ABI, (uint32_t)__builtin_offsetof(hb_host_t, sense_keys), s_ms, s_ticks, s_log, s_log_u32, s_fill, s_text, s_cvb, s_fill,
                                s_cvl, s_cvp, s_cvt, s_cvx, s_led, s_rand, s_load, s_save, s_msend, s_master, s_blit, s_tw,
                                s_bload, s_bsave};
 static int32_t blk[512];

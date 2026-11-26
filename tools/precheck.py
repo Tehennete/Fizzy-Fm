@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
+# Copyright (C) 2026 Hugo Gilbert
 """What fm1-dock's build will check, tried first on a computer without the FM-1's toolchain: the module compiled
 for a 32-bit RISC-V (clang, rv32im, no FPU), then
   - nothing undefined but memcpy / memset and the like (a 64-bit division or a float would ask for a helper)
