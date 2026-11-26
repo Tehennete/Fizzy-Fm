@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Hugo Gilbert
-"""APLAT's tests, on a computer: the module unchanged on host/host.c (fm1-dock's screen code under it), built with
+"""Fizzy-Fm's tests, on a computer: the module unchanged on host/host.c (fm1-dock's screen code under it), built with
 the address and undefined-behaviour sanitizers, played by scripts; the sound and the screens are then checked.
 
   DOCK=/path/to/fm1-dock python3 tests/run_tests.py [-k NAME]      (needs cc, numpy, Pillow)
@@ -24,24 +24,27 @@ import numpy as np
 ROOT = Path(__file__).resolve().parents[1]
 DOCK = Path(os.environ.get("DOCK", ROOT.parent / "fm1-dock")).resolve()
 OUT = ROOT / "build" / "tests"
-BIN = OUT / "aplat_host_san"
+BIN = OUT / "fizzy_host_san"
 FS = 44118
 ENC_SELECT, ENC_ALGO, K1, K2, K3, K4, ENC_PRESETS = 0, 1, 2, 3, 4, 5, 6
 BTN = dict(FX=2, SEL=3, ENV=4, LFO=5, EDIT=6, GLO=7, SAVE=9, ARP=10, SEQ=11, PLAY=12, REC=13)
+OCT_DOWN, OCT_UP, HOME = 0, 1, 8
 failures = []
 
 
 def names_from_source():
-    src = (ROOT / "aplat" / "ap_def.h").read_text()
+    src = (ROOT / "fizzyfm" / "ap_def.h").read_text()
     fac = re.search(r"static const factory_t FACTORY\[\] = \{(.*?)\n\};", src, re.S).group(1)
     return re.findall(r'\{"([^"]+)",', fac)
 
 
 FACTORY = names_from_source()
-_src = (ROOT / "aplat" / "ap_def.h").read_text()
+_src = (ROOT / "fizzyfm" / "ap_def.h").read_text()
 MONO = [n for n, arr in re.findall(r'\{"([^"]+)", (FS_\w+)\}', _src)
         if re.search(r"P_MODE, MODE_(MONO|LEGATO)", re.search(arr + r"\[\] = \{(.*?)NP\};", _src, re.S).group(1))]
-NPAGES = (ROOT / "aplat" / "ap_ui.h").read_text().split("static const page_t PAGES[] = {")[1].split("};")[0].count("{\"")
+_pages = (ROOT / "fizzyfm" / "ap_ui.h").read_text().split("static const page_t PAGES[] = {")[1].split("};")[0]
+PAGE_BTN = re.findall(r'\{"[^"]+", HB_BTN_(\w+),', _pages)     # the button of each page, in order
+NPAGES = len(PAGE_BTN)
 
 
 def build():
@@ -254,7 +257,7 @@ def t_unison_budget():
 
 def param_ids():
     """the parameters' numbers by name, from the source (they are also their NRPN numbers)"""
-    src = (ROOT / "aplat" / "ap_def.h").read_text()
+    src = (ROOT / "fizzyfm" / "ap_def.h").read_text()
     body = src.split("#define AP_PARAMS(X)")[1].split("#define X(id")[0]
     subs = {k: re.findall(r"X\(%s##_(\w+)," % v, src) for k, v in (("OSC", "o"), ("ENV", "e"), ("LFO", "l"), ("MOD", "m"), ("FX", "f"))}
     ids = []
@@ -264,7 +267,7 @@ def param_ids():
 
 
 P = param_ids()
-_def = (ROOT / "aplat" / "ap_def.h").read_text()
+_def = (ROOT / "fizzyfm" / "ap_def.h").read_text()
 FILTERS = re.findall(r'"([^"]+)"', re.search(r"LS_FTYPE\[\] = \{(.*?)\};", _def, re.S).group(1))
 EFFECTS = re.findall(r'"([^"]+)"', re.search(r"LS_FX\[\] = \{(.*?)\};", _def, re.S).group(1))
 
@@ -414,7 +417,7 @@ def t_guard():
         for k in (48, 52, 55, 59, 62, 65, 69, 72):
             s.on(k)
         s.wait(1500)
-        d, out = s.run(env={"APLAT_LOAD": str(pct)})
+        d, out = s.run(env={"FIZZY_LOAD": str(pct)})
         if d is None:
             continue
         n = int(re.search(r"notes allowed at the end: (\d+)", out).group(1))
@@ -449,7 +452,7 @@ def t_arp():
     idx = FACTORY.index("ARP ECHO")
     for name, bpm in (("arp_tempo", None), ("arp_midi", 150)):
         s = Script(name).preset(idx)
-        s.btn("FX").enc(K4, -127).enc(ENC_SELECT, 1).enc(K4, -127)      # the echo and the reverb off, to count the notes
+        s.btn("FX").enc(K4, -127).btn("FX").enc(K4, -127)          # the echo and the reverb off, to count the notes
         s.wait(50)
         if bpm:
             t, end = s.t, s.t + 5200
@@ -479,9 +482,10 @@ def t_pages():
     """every page: it draws, and a picture of each for the README"""
     s = Script("pages").preset(2)
     s.on(60).on(64).on(67).wait(300)
-    for i in range(NPAGES):
+    for i in range(NPAGES):                   # each tap of a section's button: its next page
+        if i:
+            s.btn(PAGE_BTN[i])
         s.wait(120).shot(f"page{i:02d}")
-        s.enc(ENC_SELECT, 1)
     s.off(60).off(64).off(67).wait(300)
     for b in BTN:
         if b not in ("SAVE", "REC"):
@@ -510,17 +514,159 @@ def t_save_compare():
         fail("save", "the user sounds were not written")
 
 
+KINDS = ["ANY", "BASS", "LEAD", "PAD", "PLUCK", "KEYS", "BELL", "WEIRD"]
+
+
+def t_random():
+    """the dice (fizzyfm/ap_rand.h). Thousands of throws: every parameter in its range, a name, the same seed the
+    same sound, a mutation still a sound. A few of each kind played: none silent, none over the limiter, and how far
+    apart their levels are. Then the panel: ROLL, back, forward, MUTATE, and the editor told each time."""
+    dump = OUT / "rand_dump"
+    subprocess.run(["cc", "-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-Wall", "-Wextra",
+                    "-Werror", "-Wno-unused-function", "-o", str(dump), str(ROOT / "tests" / "rand_dump.c")], check=True)
+    seen, kinds = set(), set()
+    for kind in range(8):
+        for chaos in (0, 48, 127):
+            r = subprocess.run([str(dump), "200", str(kind), str(chaos), "m"], capture_output=True, text=True)
+            if r.returncode:
+                fail("random", f"{KINDS[kind]}, chaos {chaos}: {r.stderr.strip()[-300:]}")
+                return
+            for ln in r.stdout.splitlines()[::2]:
+                k, h = ln.split()
+                b = bytes.fromhex(h)
+                seen.add(b[132:].split(b"\0")[0])
+                if kind == 0:
+                    kinds.add(int(k))
+                elif int(k) != kind:
+                    fail("random", f"asked for {KINDS[kind]}, got {KINDS[int(k)]}")
+    print(f"  {8 * 3 * 200} throws and as many mutations: {len(seen)} names, ANY gave {len(kinds)} kinds")
+    if len(kinds) != 7 or len(seen) < 150:
+        fail("random", "ANY does not reach every kind, or the names are too few")
+    # a few of each kind, as an editor would send them, played
+    per, levels = 8, []
+    for kind in range(1, 8):
+        pats = [bytes.fromhex(ln.split()[1]) for ln in
+                subprocess.run([str(dump), str(per), str(kind), "64"], capture_output=True, text=True).stdout.splitlines()]
+        s = Script(f"random_{kind}")
+        marks = []
+        for b in pats:
+            for i in range(132):
+                s.add(f"nrpn {i} {b[i]}")
+            s.wait(420)
+            notes = [60] if b[P["MODE"]] or kind == 1 else [60, 64, 67]
+            for n in notes:
+                s.on(n)
+            marks.append(s.t)
+            s.wait(700)
+            for n in notes:
+                s.off(n)
+            s.wait(380)
+        d, out = s.run()
+        if d is None:
+            return
+        for j, t0 in enumerate(marks):
+            x = seg(d, t0 + 10, t0 + 700)
+            pk = float(np.abs(x).max())
+            levels.append(pk)
+            if pk < 500:
+                fail("random", f"{KINDS[kind]}, seed {j + 1}: silent (peak {pk:.0f})")
+            if pk > 24000:
+                fail("random", f"{KINDS[kind]}, seed {j + 1}: over the limiter ({pk:.0f})")
+    db = 20 * np.log10(np.array(levels) / np.median(levels))
+    print(f"  {len(levels)} sounds played: peaks from {db.min():+.1f} to {db.max():+.1f} dB around the middle one, "
+          f"8 in 10 within {np.percentile(db, 10):+.1f} .. {np.percentile(db, 90):+.1f} dB")
+    if np.percentile(db, 10) < -9 or np.percentile(db, 90) > 9:
+        fail("random", "the levels are too far apart")
+    # the panel
+    s = Script("random").preset(2)
+    s.add("nrpn 2000 0").wait(900)                # an editor listens: every throw is sent to it
+    s.btn("PLAY").wait(60).shot("random0")     # PLAY again: RANDOM
+    for _ in range(3):
+        s.enc(K1, 1).wait(900)                    # three throws
+    s.on(60).wait(300).off(60).wait(200).shot("random3")
+    s.enc(K1, -1).wait(900)                       # back to the second
+    s.enc(K1, 1).wait(900)                        # forward: the third again
+    s.enc(K2, 3).enc(K3, -8).enc(K4, 1).wait(900)   # KIND and CHAOS turned, then a mutation of the third
+    s.enc(K4, -1).wait(900)                       # back: the third
+    s.enc(K1, -1).enc(K1, -1).enc(K1, -1).wait(900).shot("random_first")   # all the way back: the sound as it was
+    s.enc(K1, -1).wait(100)                       # no further
+    d, out = s.run()
+    if d is None:
+        return
+    sums = [int(v) for v in re.findall(r"NRPN out 2011 = (\d+)", out)]
+    if len(sums) != 9:
+        fail("random", f"{len(sums)} sounds reached the editor, 9 expected")
+        return
+    first, a, b, c, b2, c2, m, c3, first2 = sums
+    print(f"  the panel: three throws {a} {b} {c}, back {b2}, forward {c2}, mutated {m}, back {c3}, the first {first2}")
+    if not (b2 == b and c2 == c and c3 == c and first2 == first and m != c and len({first, a, b, c}) == 4):
+        fail("random", "the way back through the throws is wrong")
+    if rms(seg(d, s.t - 6000, s.t)) < 0 or float(np.abs(d).max()) > 24000:
+        fail("random", "over the limiter")
+
+
+def t_keys():
+    """the FM-1's own keys: they play in the module's octave and go out as MIDI; OCT - / OCT + light and blink the
+    faster the further; both at once: the middle; SELECT turns the tempo"""
+    s = Script("keys").preset(0)
+    s.add("nrpn 2000 0").wait(600)              # (an editor listens: the tempo is sent to it)
+    s.add("key 7 100").wait(500).add("keyup 7").wait(400)            # C4
+    t1 = s.t
+    s.add(f"btn {OCT_UP}").wait(50).add("leds")
+    s.add("key 7 100").wait(500).add("keyup 7").wait(400)            # C5
+    s.add(f"btn {OCT_UP}").add(f"btn {OCT_UP}").wait(20)             # +3: blinking fast
+    for _ in range(12):
+        s.wait(45).add("leds")
+    s.add("key 7 100").wait(150)                # held across a change of octave: it still lets go of its own note
+    s.add(f"btn {OCT_DOWN}").wait(100).add("keyup 7").wait(400)
+    s.add(f"down {OCT_DOWN}").add(f"down {OCT_UP}").add(f"up {OCT_DOWN}").add(f"up {OCT_UP}").wait(60).add("leds")
+    s.enc(ENC_SELECT, 1).wait(30).enc(ENC_SELECT, 1).wait(100).shot("tempo")
+    d, out = s.run()
+    if d is None:
+        return
+    f0, f1 = pitch_of(seg(d, t1 - 800, t1 - 450)[:, 0]), pitch_of(seg(d, t1 + 100, t1 + 450)[:, 0])
+    leds = [int(v, 16) for v in re.findall(r"leds ([0-9a-f]{4})", out)]
+    blink = [v >> OCT_UP & 1 for v in leds[1:13]]
+    print(f"  key C4 {f0:.1f} Hz, an octave up {f1:.1f} Hz; OCT + at +1 {leds[0] >> OCT_UP & 1}, at +3 {''.join(map(str, blink))}"
+          f", both: {leds[-1] & 3}")
+    if abs(f0 - 261.6) > 2 or abs(f1 - 523.3) > 4:
+        fail("keys", "the keys are not in their octave")
+    if not (leds[0] >> OCT_UP & 1) or len(set(blink)) != 2 or leds[-1] & 3:
+        fail("keys", "the octave's lights are wrong")
+    ons = re.findall(r"MIDI out 90 (\d+) 100", out)
+    offs = re.findall(r"MIDI out 80 (\d+) 0", out)
+    if ons != ["60", "72", "96"] or offs != ["60", "72", "96"]:
+        fail("keys", f"the keys sent {ons} / {offs}")
+    if f"NRPN out {P['TEMPO']} = 62" not in out:
+        fail("keys", "SELECT did not turn the tempo")
+
+
 def t_fuzz(seed, rounds=60):
     """random sounds, random turns, buttons and notes: nothing may trip the sanitizers or reach full scale"""
     rng = np.random.default_rng(seed)
     s = Script(f"fuzz_{seed}")
-    held = []
+    held, kheld = [], []
     for _ in range(rounds):
         s.enc(ENC_PRESETS, int(rng.integers(-5, 6))).wait(int(rng.integers(5, 300)))
         for _ in range(int(rng.integers(1, 30))):
             r = rng.random()
-            if r < 0.30:
+            if r < 0.10:
                 s.enc(ENC_SELECT, int(rng.integers(-3, 4)))
+            elif r < 0.30:                        # the FM-1's own keys, its octave, HOME
+                q = rng.random()
+                if q < 0.15:
+                    s.add(f"btn {int(rng.choice([OCT_DOWN, OCT_UP, HOME]))}")
+                elif q < 0.20:
+                    s.add(f"down {OCT_DOWN}").add(f"down {OCT_UP}").add(f"up {OCT_DOWN}").add(f"up {OCT_UP}")
+                elif q < 0.65:
+                    k = int(rng.integers(0, 27))
+                    s.add(f"key {k} {int(rng.integers(0, 128))}")
+                    kheld.append(k)
+                elif kheld:
+                    k = kheld.pop(int(rng.integers(0, len(kheld))))
+                    if rng.random() < 0.3:
+                        s.add(f"press {k} {int(rng.integers(0, 128))}")
+                    s.add(f"keyup {k}")
             elif r < 0.72:
                 s.enc(int(rng.integers(K1, K4 + 1)), int(rng.choice([-200, -40, -7, -1, 1, 7, 40, 200])))
             elif r < 0.78:
@@ -551,6 +697,8 @@ def t_fuzz(seed, rounds=60):
         s.wait(int(rng.integers(20, 500)))
     for k in held:
         s.off(k)
+    for k in kheld:
+        s.add(f"keyup {k}")
     s.midi(0xB0, 123, 0).wait(500)
     d, out = s.run()
     if d is None:
@@ -566,7 +714,7 @@ def t_fuzz(seed, rounds=60):
 TESTS = {"tuning": t_tuning, "alias": t_alias, "factory": t_factory, "filters": t_filters, "effects": t_effects,
          "link": t_link, "budget": t_unison_budget, "guard": t_guard,
          "legato": t_legato,
-         "arp": t_arp, "pages": t_pages, "save": t_save_compare,
+         "arp": t_arp, "pages": t_pages, "save": t_save_compare, "random": t_random, "keys": t_keys,
          "fuzz": lambda: [t_fuzz(seed) for seed in (1, 2, 3, 4)]}
 
 

@@ -1,10 +1,10 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Copyright (C) 2026 Hugo Gilbert */
-/* APLAT's module on a bare 32-bit RISC-V (rv32im), for tools/load/count.py: it counts the instructions a block of
+/* Fizzy-Fm's module on a bare 32-bit RISC-V (rv32im), for tools/load/count.py: it counts the instructions a block of
  * sound takes. Not the FM-1's chip, but a 32-bit processor with a multiplier and no FPU, as it is. */
 #include <stdint.h>
 #define HB_DESC const hb_module_t hb_module
-#include "../../aplat/aplat.c"
+#include "../../fizzyfm/fizzyfm.c"
 
 static uint32_t t_ms;
 static uint32_t s_ms(void) { return t_ms; }

@@ -1,14 +1,14 @@
 #!/bin/sh
 # SPDX-License-Identifier: GPL-3.0-only
-# Build APLAT for this computer and run a script: host/run.sh SCRIPT [OUT]   (DOCK: a checkout of fm1-dock)
+# Build Fizzy-Fm for this computer and run a script: host/run.sh SCRIPT [OUT]   (DOCK: a checkout of fm1-dock)
 set -e
 cd "$(dirname "$0")/.."
 DOCK="${DOCK:-../fm1-dock}"
 mkdir -p build
 cc -O2 -Wall -Wextra -Wno-unused-function -Wno-unused-parameter -Wno-missing-field-initializers \
-   -I"$DOCK/firmware/dock" -I"$DOCK/firmware/src" -I"$DOCK/firmware/gen" -o build/aplat_host host/host.c
+   -I"$DOCK/firmware/dock" -I"$DOCK/firmware/src" -I"$DOCK/firmware/gen" -o build/fizzy_host host/host.c
 out="${2:-build/$(basename "$1" .txt)}"
-build/aplat_host "$out" "$1"
+build/fizzy_host "$out" "$1"
 python3 - "$out" <<'PY'
 import sys
 from pathlib import Path

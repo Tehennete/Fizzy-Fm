@@ -30,11 +30,11 @@ def run(*cmd):
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    obj = OUT / "aplat.o"
+    obj = OUT / "fizzy.o"
     run("clang", "--target=riscv32-unknown-elf", "-march=rv32im", "-mabi=ilp32", "-O2", "-ffunction-sections",
         "-fdata-sections", "-fno-builtin", "-ffreestanding", "-Wall", "-Wextra", "-Werror", "-Wno-unused-function",
         "-Wno-unused-parameter", "-Wno-missing-field-initializers", f"-I{DOCK}/firmware/dock", f"-I{DOCK}/modules/lib",
-        "-c", str(ROOT / "aplat" / "aplat.c"), "-o", str(obj))
+        "-c", str(ROOT / "fizzyfm" / "fizzyfm.c"), "-o", str(obj))
     errors = []
     undef = set(run("llvm-nm", "-u", str(obj)).split()[1::2]) - ALLOWED
     if undef:
@@ -72,7 +72,7 @@ def main():
                 errors.append(f"{name}+{i:#x}: the word {v:#010x} reads as a ROM address")
     # JieLi's compiler (clang 4) folds a clamp's bound and a scaling by a power of two after it into one constant,
     # where this clang does not: every bound over 16 bits is tried against every such scaling here, in the source
-    for f in sorted((ROOT / "aplat").glob("ap_*.h")) + [ROOT / "aplat" / "aplat.c"]:
+    for f in sorted((ROOT / "fizzyfm").glob("ap_*.h")) + [ROOT / "fizzyfm" / "fizzyfm.c"]:
         for ln_no, ln in enumerate(f.read_text().splitlines(), 1):
             for m in re.finditer(r"clampi\([^;]*?,\s*-\s*(\d+)\s*,\s*(\d+)\s*\)", ln):
                 b = int(m.group(1))

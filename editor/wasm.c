@@ -1,5 +1,5 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
-/* APLAT in a browser: the module (aplat/aplat.c) unchanged, with fm1-dock's screen code and font under it, built as
+/* Fizzy-Fm in a browser: the module (fizzyfm/fizzyfm.c) unchanged, with fm1-dock's screen code and font under it, built as
  * WebAssembly (tools/build_editor.py). The editor's page plays this, shows its screen, and takes the parameters'
  * names, ranges and texts from it: the page and the FM-1 cannot disagree. Copyright (C) 2026 Hugo Gilbert */
 #include <stdint.h>
@@ -29,7 +29,7 @@ static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint1
 #include "hb_lib.c"
 
 #define HB_DESC const hb_module_t hb_module
-#include "../aplat/aplat.c"
+#include "../fizzyfm/fizzyfm.c"
 
 static uint32_t now_ms, leds;
 static uint32_t h_ms(void) { return now_ms; }
@@ -94,7 +94,7 @@ static const char *const IDS[NP] = {AP_PARAMS(X)};
 EXPORT(w_init) void w_init(void)
 {
     lcd_fill(0, 0, 240, 24, 0);
-    draw_text_box(4, 4, 120, &FONT_S, "APLAT", 0xFFFF, 0);
+    draw_text_box(4, 4, 120, &FONT_S, "FIZZY-FM", 0xFFFF, 0);
     hb_module.init(&host);
     hb_module.draw(1);
 }
@@ -146,6 +146,19 @@ EXPORT(w_nuser) uint32_t w_nuser(void) { return NUSER; }
 EXPORT(w_factory_name) const char *w_factory_name(uint32_t i) { return i < NFACTORY ? FACTORY[i].name : ""; }
 EXPORT(w_preset) void w_preset(uint32_t i) { preset_load(i); }
 EXPORT(w_preset_now) uint32_t w_preset_now(void) { return ui_s.preset; }
+/* the dice (fizzyfm/ap_rand.h), as the RANDOM page throws them: a new sound of this kind, or (mutate) the one
+ * there is, moved a little; the kind thrown is returned */
+EXPORT(w_nrk) uint32_t w_nrk(void) { return NRK; }
+EXPORT(w_rk_name) const char *w_rk_name(uint32_t i) { return i < NRK ? RK_NAME[i] : ""; }
+EXPORT(w_random) uint32_t w_random(uint32_t kind, uint32_t chaos, uint32_t mutate)
+{
+    rd.kind = (uint8_t)(kind < NRK ? kind : RK_ANY);
+    rd.chaos = (uint8_t)(chaos > 127u ? 127u : chaos);
+    if (rd.n)
+        rd.pos = (uint8_t)(rd.n - 1u);          /* (always a new one: the page has its own undo) */
+    rand_turn(mutate, 1);
+    return rd.how[rd.pos];
+}
 /* the tables of one's own: NUWT of 8 frames x 64 harmonics x (sine part, cosine part), 16 bits */
 EXPORT(w_uwt) int16_t *w_uwt(void) { return uwt[0]; }
 EXPORT(w_uwt_changed) void w_uwt_changed(uint32_t slot)

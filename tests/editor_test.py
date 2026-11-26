@@ -20,8 +20,8 @@ TEST = r"""
 (async () => {
   const R = {}, wait = ms => new Promise(r => setTimeout(r, ms));
   try {
-    for (let i = 0; i < 100 && !window.aplat; i++) await wait(50);
-    const A = window.aplat, W = A.W;
+    for (let i = 0; i < 100 && !window.fizzy; i++) await wait(50);
+    const A = window.fizzy, W = A.W;
     R.started = !!A;
     R.controls = document.querySelectorAll(".p").length;
     R.cards = document.querySelectorAll(".card").length;
@@ -57,6 +57,20 @@ TEST = r"""
     let lit = 0; for (let y = 0; y < 128; y += 4) for (let x = 0; x < 480; x += 8) if (px[(y * 480 + x) * 4] > 200) lit++;
     R.wavePixels = lit;
     R.status = document.getElementById("status").textContent;
+    // the dice: a new sound (another name, it plays), a mutation of it, and Undo twice brings the first back
+    const before = A.toJSON(), name0 = A.nameNow();
+    await wait(700);
+    document.getElementById("rkind").value = 3; document.getElementById("brand").click();
+    R.diceName = A.nameNow(); R.diceNew = A.toJSON() !== before && A.nameNow() !== name0;
+    for (let i = 0; i < 300; i++) W.w_draw(3000 + i);
+    W.w_midi(0x90, 60, 100); R.dicePeak = peakOf(120); W.w_midi(0x80, 60, 0);
+    await wait(700);
+    const thrown = A.toJSON();
+    document.getElementById("bmut").click();
+    R.mutated = A.toJSON() !== thrown && A.nameNow() === R.diceName;
+    await wait(700);
+    document.getElementById("bundo").click(); document.getElementById("bundo").click();
+    R.diceUndo = A.nameNow() === name0;
     R.ok = true;
   } catch (e) { R.error = String(e && e.stack || e); }
   document.getElementById("testout").textContent = "RESULT" + JSON.stringify(R) + "END";
@@ -87,9 +101,9 @@ def main():
     subprocess.run([*base, "--virtual-time-budget=6000", f"--screenshot={OUT / 'editor.png'}", (ROOT / "docs" / "index.html").as_uri()],
                    capture_output=True, timeout=180)
     want = {"started": True, "cutSet": 40, "cutText": "40", "fxKnob": "RATE", "fxDefault": 30, "fileRoundTrip": True,
-            "undo": 100, "redo": 20, "nrpnIn": 77, "ok": True}
+            "undo": 100, "redo": 20, "nrpnIn": 77, "diceNew": True, "mutated": True, "diceUndo": True, "ok": True}
     bad = [k for k, v in want.items() if r.get(k) != v]
-    if r.get("notePeak", 0) < 2000 or r.get("userTablePeak", 0) < 2000 or r.get("controls", 0) < 120 or r.get("wavePixels", 0) < 50:
+    if r.get("notePeak", 0) < 2000 or r.get("userTablePeak", 0) < 2000 or r.get("dicePeak", 0) < 500 or r.get("controls", 0) < 120 or r.get("wavePixels", 0) < 50:
         bad.append("sound or controls")
     if bad:
         raise SystemExit(f"FAILED: {bad}")

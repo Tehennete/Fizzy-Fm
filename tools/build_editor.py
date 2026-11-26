@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
-"""APLAT's editor: the module compiled to WebAssembly (editor/wasm.c: aplat/aplat.c on fm1-dock's screen code and
+"""Fizzy-Fm's editor: the module compiled to WebAssembly (editor/wasm.c: fizzyfm/fizzyfm.c on fm1-dock's screen code and
 font) and put inside editor/editor.html -> docs/index.html, one file that needs no server (open it in Chrome or
 Edge, or serve docs/ as the repository's GitHub Pages).
 
@@ -17,7 +17,7 @@ OUT = ROOT / "build" / "editor"
 
 def main():
     OUT.mkdir(parents=True, exist_ok=True)
-    wasm = OUT / "aplat.wasm"
+    wasm = OUT / "fizzy.wasm"
     subprocess.run(["clang", "--target=wasm32", "-O2", "-nostdlib", "-ffreestanding", "-fno-builtin", "-Wall",
                     "-Wno-unused-function", "-Wno-missing-field-initializers", f"-I{DOCK}/firmware/dock",
                     f"-I{DOCK}/firmware/src", f"-I{DOCK}/firmware/gen", f"-I{DOCK}/modules/lib", "-Wl,--no-entry",

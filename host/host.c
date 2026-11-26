@@ -1,13 +1,14 @@
 /* SPDX-License-Identifier: GPL-3.0-only */
 /* Copyright (C) 2026 Hugo Gilbert */
-/* APLAT on a computer: the module (aplat/aplat.c) unchanged, on a stand-in for fm1-dock's host. A script plays
- * notes, turns knobs and presses buttons over time; out come the sound (WAV) and the screen (PPM) at the moments
- * the script asks. The screen is drawn with fm1-dock's own gfx.c and font.
+/* Fizzy-Fm on a computer: the module (fizzyfm/fizzyfm.c) unchanged, on a stand-in for fm1-dock's host. A script plays
+ * notes, turns knobs, presses buttons and the FM-1's keys over time; out come the sound (WAV) and the screen (PPM) at
+ * the moments the script asks. The screen is drawn with fm1-dock's own gfx.c.
  *
- *   cc -O2 -I$DOCK/firmware/dock -I$DOCK/firmware/src -I$DOCK/firmware/gen -o aplat_host host/host.c
- *   aplat_host OUT script.txt
- * Script lines: "T on KEY VEL", "T off KEY", "T btn ID", "T enc ID CLICKS", "T midi ST D1 D2", "T nrpn NUMBER VALUE",
- * "T shot NAME", "T end"; T in ms. */
+ *   cc -O2 -I$DOCK/firmware/dock -I$DOCK/firmware/src -I$DOCK/firmware/gen -o fizzy_host host/host.c
+ *   fizzy_host OUT script.txt
+ * Script lines: "T on NOTE VEL", "T off NOTE" (as MIDI), "T key K VEL", "T keyup K", "T press K P" (the FM-1's key K,
+ * 0 = F3), "T btn ID" (pressed and let go), "T down ID", "T up ID", "T enc ID CLICKS", "T midi ST D1 D2",
+ * "T nrpn NUMBER VALUE", "T leds" (prints the buttons' lights), "T shot NAME", "T end"; T in ms. */
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,11 +38,11 @@ static void lcd_blit(uint32_t x, uint32_t y, uint32_t w, uint32_t h, const uint1
 #include "gfx.c"
 
 #define HB_DESC const hb_module_t hb_module
-#include "../aplat/aplat.c"
+#include "../fizzyfm/fizzyfm.c"
 
 static uint32_t now_ms, blits, leds;
 static uint32_t h_ms(void) { return now_ms; }
-/* APLAT_LOAD=N: every voice sounding takes N % of a block's time (the guard that sheds notes can be tried) */
+/* FIZZY_LOAD=N: every voice sounding takes N % of a block's time (the guard that sheds notes can be tried) */
 static uint32_t load_pct, tick_calls, tick_acc;
 static uint32_t h_ticks(void)
 {
@@ -61,7 +62,7 @@ static void h_fill(int32_t x, int32_t y, int32_t w, int32_t h, uint16_t c)
     if (y < 0) { h += y; y = 0; }
     if (x + w > 240) w = 240 - x;
     if (y + h > 240) h = 240 - y;
-    if (y < HB_TOP) { fprintf(stderr, "fill above HB_TOP\n"); exit(2); }
+    if (y < HB_TOP && !(hb_module.flags & HB_F_SCREEN)) { fprintf(stderr, "fill above HB_TOP\n"); exit(2); }
     if (w > 0 && h > 0)
         lcd_fill((uint32_t)x, (uint32_t)y, (uint32_t)w, (uint32_t)h, c);
 }
@@ -86,7 +87,7 @@ static void h_cv_pixel(int32_t x, int32_t y, uint16_t c) { cv_pset(x, y, c); }
 static void h_cv_text(int32_t x, int32_t y, uint32_t big, const char *s, uint16_t fg) { cv_text(x, y, big ? &FONT_L : &FONT_S, s, fg); }
 static void h_cv_blit(int32_t x, int32_t y)
 {
-    if (y < HB_TOP) { fprintf(stderr, "blit above HB_TOP\n"); exit(2); }
+    if (y < HB_TOP && !(hb_module.flags & HB_F_SCREEN)) { fprintf(stderr, "blit above HB_TOP\n"); exit(2); }
     if (x >= 0 && y >= 0 && x + (int32_t)cv_w <= 240 && y + (int32_t)cv_h <= 240) {
         cv_blit((uint32_t)x, (uint32_t)y);
         blits += cv_w * cv_h;
@@ -141,13 +142,15 @@ static int h_bank_save_n(uint32_t idx, const void *p, uint32_t n)
     return 0;
 }
 static uint32_t h_bank_free(void) { return 7; }
+static uint32_t key0;                           /* the note the module says its key 0 plays (an SMK-37's outer keys) */
+static void h_key_base(uint32_t n) { key0 = n; }
 static hb_host_t host = {
     .abi = HB_ABI, .size = sizeof(hb_host_t), .ms = h_ms, .ticks = h_ticks, .log = h_log, .log_u32 = h_log_u32,
     .fill = h_fill, .text = h_text, .cv_begin = h_cv_begin, .cv_rect = h_cv_rect, .cv_line = h_cv_line,
     .cv_pixel = h_cv_pixel, .cv_text = h_cv_text, .cv_blit = h_cv_blit, .led = h_led, .rand = h_rand, .load = h_load,
     .save = h_save, .midi_send = h_midi_send, .master = h_master, .blit = h_blit, .text_w = h_text_w,
     .bank_load = h_bank_load, .bank_save = h_bank_save, .bank_load_n = h_bank_load_n, .bank_save_n = h_bank_save_n,
-    .bank_free = h_bank_free,
+    .bank_free = h_bank_free, .key_base = h_key_base,
 };
 
 typedef struct { uint32_t t; char what[8]; int a, b, c; char name[64]; } hev_t;
@@ -180,8 +183,8 @@ int main(int argc, char **argv)
     uint32_t wav_n = 0, step = 0, owed = 0, i, clipped = 0, worst_blit = 0;
     static int32_t blk[512];
     int32_t peak = 0;
-    if (getenv("APLAT_LOAD")) load_pct = (uint32_t)atoi(getenv("APLAT_LOAD"));
-    if (argc < 3 || !(f = fopen(argv[2], "r"))) { fprintf(stderr, "usage: aplat_host OUT script.txt\n"); return 1; }
+    if (getenv("FIZZY_LOAD")) load_pct = (uint32_t)atoi(getenv("FIZZY_LOAD"));
+    if (argc < 3 || !(f = fopen(argv[2], "r"))) { fprintf(stderr, "usage: fizzy_host OUT script.txt\n"); return 1; }
     while (fgets(line, sizeof line, f) && nev < 20000u) {
         hev_t e;
         memset(&e, 0, sizeof e);
@@ -194,7 +197,7 @@ int main(int argc, char **argv)
     fclose(f);
     /* the top line is the host's: a grey band, so the pictures show where the module's part starts */
     lcd_fill(0, 0, 240, 24, 0x0000);
-    draw_text_box(4, 4, 120, &FONT_S, "APLAT", 0xFFFF, 0);
+    draw_text_box(4, 4, 120, &FONT_S, "FIZZY-FM", 0xFFFF, 0);
     if (hb_module.abi != HB_ABI || hb_module.init(&host)) { fprintf(stderr, "init failed\n"); return 1; }
     hb_module.draw(1);
     for (now_ms = 1; now_ms <= end_ms; now_ms++) {
@@ -205,6 +208,12 @@ int main(int argc, char **argv)
             else if (!strcmp(e->what, "off")) hb_module.note(0, (uint32_t)e->a, 0);
             else if (!strcmp(e->what, "btn")) { hb_module.ui(HB_EV_BTN_DOWN | (uint32_t)e->a, 0); hb_module.ui(HB_EV_BTN_UP | (uint32_t)e->a, 0); }
             else if (!strcmp(e->what, "enc")) hb_module.ui(HB_EV_ENC | (uint32_t)e->a, e->b);
+            else if (!strcmp(e->what, "down")) hb_module.ui(HB_EV_BTN_DOWN | (uint32_t)e->a, 0);
+            else if (!strcmp(e->what, "up")) hb_module.ui(HB_EV_BTN_UP | (uint32_t)e->a, 0);
+            else if (!strcmp(e->what, "key")) hb_module.ui(HB_EV_KEY_DOWN | (uint32_t)e->a, e->b);
+            else if (!strcmp(e->what, "keyup")) hb_module.ui(HB_EV_KEY_UP | (uint32_t)e->a, 0);
+            else if (!strcmp(e->what, "press")) hb_module.ui(HB_EV_KEY_PRESSURE | (uint32_t)e->a, e->b);
+            else if (!strcmp(e->what, "leds")) printf("%6u ms  leds %04x\n", now_ms, leds & 0x3FFFu);
             else if (!strcmp(e->what, "midi")) hb_module.midi((uint32_t)e->a, (uint32_t)e->b, (uint32_t)e->c);
             else if (!strcmp(e->what, "nrpn")) {
                 hb_module.midi(0xB0, 99, (uint32_t)e->a >> 7);

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Hugo Gilbert
-"""A demo of APLAT's factory sounds, rendered on a computer by the module's own code (host/host.c): a script of
+"""A demo of Fizzy-Fm's factory sounds, rendered on a computer by the module's own code (host/host.c): a script of
 notes, key pressure, the wheel and a macro for host/run.sh.
 
   python3 tools/demo.py > build/demo.txt && DOCK=... host/run.sh build/demo.txt build/demo"""
@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-NAMES = re.findall(r'\{"([^"]+)", FS_', (ROOT / "aplat" / "ap_def.h").read_text())
+NAMES = re.findall(r'\{"([^"]+)", FS_', (ROOT / "fizzyfm" / "ap_def.h").read_text())
 lines, t, cur = [], 100, 1
 
 

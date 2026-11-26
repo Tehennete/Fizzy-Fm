@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: GPL-3.0-only
 # Copyright (C) 2026 Hugo Gilbert
-"""How many instructions a block of APLAT's sound takes, on a 32-bit RISC-V stand-in (rv32im, clang -O2), run in
+"""How many instructions a block of Fizzy-Fm's sound takes, on a 32-bit RISC-V stand-in (rv32im, clang -O2), run in
 Unicorn. fm1-emu charges one instruction per cycle of 240 MHz: a block of 256 frames has 5.8 ms, 1 392 000 of them,
 and fm1-dock's rule is to stay under half. The FM-1's chip is another instruction set and has a flash cache, so this
 is an estimate of the order, not a measurement: the real number is fm1-dock's LOAD on the unit.
@@ -70,7 +70,7 @@ class Machine:
 
 
 def params():
-    src = (ROOT / "aplat" / "ap_def.h").read_text()
+    src = (ROOT / "fizzyfm" / "ap_def.h").read_text()
     body = src.split("#define AP_PARAMS(X)")[1].split("#define X(id")[0]
     osc = re.findall(r"X\(o##_(\w+),", src)
     env = re.findall(r"X\(e##_(\w+),", src)
@@ -92,7 +92,7 @@ def main():
     m = Machine(sym)
     m.call("x_init")
     assert m.call("x_np") >= 0 and len(P) == 132, len(P)
-    fac = re.findall(r'\{"([^"]+)", FS_', (ROOT / "aplat" / "ap_def.h").read_text())
+    fac = re.findall(r'\{"([^"]+)", FS_', (ROOT / "fizzyfm" / "ap_def.h").read_text())
 
     def play(label, preset, keys, sets=(), blocks=40):
         m.call("x_preset", preset)

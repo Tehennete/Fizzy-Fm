@@ -1,15 +1,15 @@
 <!DOCTYPE html>
 <!-- SPDX-License-Identifier: GPL-3.0-only
-     APLAT's editor. Copyright (C) 2026 Hugo Gilbert. One file: the synth itself (aplat/aplat.c as WebAssembly, with
+     Fizzy-Fm's editor. Copyright (C) 2026 Hugo Gilbert. One file: the synth itself (fizzyfm/fizzyfm.c as WebAssembly, with
      fm1-dock's screen code and font, GPL-3.0-only) is inside it. Built by tools/build_editor.py from editor/. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>APLAT editor</title>
+<title>Fizzy-Fm editor</title>
 <style>
 :root { --bg:#1a1a1a; --card:#262626; --tile:#343434; --track:#1f1f1f; --edge:#545454; --txt:#ececec; --dim:#969696; --ink:#121212; --warn:#ff5046;
-  --play:#ff9428; --osca:#ffac30; --oscb:#38c4f0; --mix:#ecdc46; --filt:#ff6068; --env:#68d66c; --lfo:#b28cff; --mod:#ff7ac4; --arp:#34d6b2; --fx:#5e9cff; --voice:#c8c8c8; }
+  --play:#ff9428; --osca:#ffac30; --oscb:#38c4f0; --mix:#ecdc46; --filt:#ff6068; --env:#68d66c; --lfo:#b28cff; --mod:#ff7ac4; --arp:#34d6b2; --fx:#5e9cff; --voice:#c8c8c8; --rand:#baec40; }
 * { box-sizing:border-box; }
 html, body { margin:0; background:var(--bg); color:var(--txt); font:13px/1.3 ui-sans-serif, system-ui, "Segoe UI", Helvetica, Arial, sans-serif; }
 button, select, input { font:inherit; color:inherit; }
@@ -69,11 +69,12 @@ a { color:var(--oscb); }
 </head>
 <body>
 <header>
-  <span class="logo">APLAT</span>
+  <span class="logo">FIZZY-FM</span>
   <select id="preset" title="Factory sounds"></select>
   <input id="name" type="text" maxlength="11" spellcheck="false" title="The sound's name">
   <button id="bundo" title="Undo (Ctrl+Z)">Undo</button><button id="bredo" title="Redo (Ctrl+Y)">Redo</button>
   <button id="bopen">Open</button><button id="bsave">Save</button><button id="bshare" title="A link that holds this sound">Link</button>
+
   <span class="sp"></span>
   <span id="status"></span>
   <button id="bsound" title="Play the synth in this page">Sound off</button>
@@ -100,11 +101,11 @@ a { color:var(--oscb); }
       <button id="bwav">Import WAV</button><button id="bwsend">Send table to FM-1</button>
       <small id="winfo"></small>
     </div>
-    <small>APLAT is free software (GPL-3.0). This page is the synth's own code in WebAssembly: what you hear and the screen are what the FM-1 does, but for its converter and its speaker. Nothing leaves your computer.</small>
+    <small>Fizzy-Fm is free software (GPL-3.0). This page is the synth's own code in WebAssembly: what you hear and the screen are what the FM-1 does, but for its converter and its speaker. Nothing leaves your computer.</small>
   </div>
   <div class="cards" id="cards"></div>
 </main>
-<input type="file" id="fopen" accept=".json,.aplat" hidden><input type="file" id="fwav" accept=".wav,audio/wav" hidden>
+<input type="file" id="fopen" accept=".json" hidden><input type="file" id="fwav" accept=".wav,audio/wav" hidden>
 <script>
 "use strict";
 const WASM_B64 = "/*WASM_BASE64*/";
@@ -194,6 +195,15 @@ function card(title, colour, wide) {
 
 const waves = [];
 function build() {
+  {                                                // the dice first: as the FM-1's RANDOM page (PLAY, then PLAY again)
+    const b = card("RANDOM: the dice", "rand"), k = el("div", "p"), c = el("div", "p");
+    k.append(el("div", "l", "KIND"), Object.assign(el("select"), { id: "rkind", title: "Which kind of sound" }));
+    c.append(el("div", "l", "CHAOS"), Object.assign(el("input"), { id: "rchaos", type: "range", min: 0, max: 127, value: 48, title: "How wild" }));
+    const r = Object.assign(el("button", null, "Roll"), { id: "brand", title: "A new sound (Undo brings the one before back)" });
+    const m = Object.assign(el("button", null, "Mutate"), { id: "bmut", title: "This sound, moved a little" });
+    r.style.background = m.style.background = "var(--rand)"; r.style.color = m.style.color = "var(--ink)";
+    b.append(k, c, r, m);
+  }
   for (const [title, colour, list, wave] of SECT) {
     const b = card(title, colour);
     if (wave != null) { const cv = el("canvas", "wave"); cv.width = 480; cv.height = 128; b.append(cv); waves[wave] = cv; }
@@ -250,7 +260,7 @@ function sync(from) {
     undoTimer = setTimeout(() => { undoTimer = 0; }, 500);
   }
   if (live && from !== "midi") { for (const i of diff) nrpn(i, p[i], true); if (nameDiff) sendName(); }
-  try { localStorage.setItem("aplat.sound", btoa(String.fromCharCode(...p))); } catch (e) { /* no storage: nothing kept */ }
+  try { localStorage.setItem("fizzyfm.sound", btoa(String.fromCharCode(...p))); } catch (e) { /* no storage: nothing kept */ }
 }
 function setParam(i, v) {
   v = Math.max(0, Math.min(W.w_max(i), v | 0));
@@ -297,8 +307,8 @@ const soundOn = () => ac && ac.state === "running";
 function note(key, vel) { if (key >= 0 && key < 128) W.w_midi(vel ? 0x90 : 0x80, key, vel); }
 
 /* ---- the screen and the panel */
-const BTN = { PLAY: 12, EDIT: 6, SEL: 3, ENV: 4, LFO: 5, SEQ: 11, ARP: 10, FX: 2, GLO: 7, REC: 13, SAVE: 9 };
-const ENC = { SELECT: 0, WAVE: 1, "KNOB 1": 2, "KNOB 2": 3, "KNOB 3": 4, "KNOB 4": 5, PRESETS: 6 };
+const BTN = { HOME: 8, PLAY: 12, EDIT: 6, SEL: 3, ENV: 4, LFO: 5, SEQ: 11, ARP: 10, FX: 2, GLO: 7, REC: 13, SAVE: 9 };
+const ENC = { "SELECT: TEMPO": 0, WAVE: 1, "KNOB 1": 2, "KNOB 2": 3, "KNOB 3": 4, "KNOB 4": 5, PRESETS: 6 };
 function panel() {
   const p = $("panel");
   for (const [n, id] of Object.entries(BTN)) {
@@ -414,7 +424,7 @@ function fromDevice(p, v) {
       else { status((s & 0x3FFF) === v ? "got the FM-1's sound" : "the FM-1's sound came incomplete"); retries = 0; }
     }
   } else if (p === 2012) status(v ? "the FM-1 has the table" : "the table did not arrive whole: send it again");
-  else if (p === 2013 && v !== 1) status("this page and the FM-1's APLAT are of different versions");
+  else if (p === 2013 && v !== 1) status("this page and the FM-1's Fizzy-Fm are of different versions");
 }
 let pending = false, check = [], retries = 0;
 setInterval(() => { if (pending) { pending = false; sync("midi"); } }, 40);
@@ -437,7 +447,7 @@ async function connect() {
     $("min").add(new Option("every input", "*"));
     for (const o of midi.outputs.values()) $("mout").add(new Option(o.name, o.id));
     for (const i of midi.inputs.values()) { $("min").add(new Option(i.name, i.id)); i.onmidimessage = e => { if ($("min").value === "*" || $("min").value === i.id) midiIn(e); }; }
-    const fm = [...midi.outputs.values()].find(o => /FM-?1|DOCK|APLAT/i.test(o.name));
+    const fm = [...midi.outputs.values()].find(o => /FM-?1|DOCK|FIZZY/i.test(o.name));
     $("mout").value = keepO || (fm ? fm.id : $("mout").value);
     if (keepI) $("min").value = keepI;
     out = midi.outputs.get($("mout").value) || null;
@@ -450,10 +460,10 @@ async function connect() {
 
 /* ---- files, links */
 function download(name, text) { const a = el("a"); a.href = URL.createObjectURL(new Blob([text], { type: "application/json" })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
-function toJSON() { const p = patchBytes(), o = {}; ids.forEach((id, i) => { if (id) o[id] = p[i]; }); return JSON.stringify({ format: "aplat-sound", version: 1, name: nameNow(), params: o }, null, 1); }
+function toJSON() { const p = patchBytes(), o = {}; ids.forEach((id, i) => { if (id) o[id] = p[i]; }); return JSON.stringify({ format: "fizzy-fm-sound", version: 1, name: nameNow(), params: o }, null, 1); }
 function fromJSON(text) {
   const j = JSON.parse(text);
-  if (j.format !== "aplat-sound" || !j.params) throw new Error("not an APLAT sound");
+  if (j.format !== "fizzy-fm-sound" || !j.params) throw new Error("not an Fizzy-Fm sound");
   W.w_preset(0);                                             // what the file does not say is as in INIT
   const p = patchBytes();
   for (const [id, v] of Object.entries(j.params)) if (id in ix) p[ix[id]] = Math.max(0, Math.min(W.w_max(ix[id]), v | 0));
@@ -521,7 +531,7 @@ function setUserTable(slot, spec) {
   userTables[slot] = spec;
   new Int16Array(W.memory.buffer, W.w_uwt() + slot * 2048, 1024).set(spec);
   W.w_uwt_changed(slot);
-  try { localStorage.setItem("aplat.table" + slot, b64u(new Uint8Array(spec.buffer))); } catch (e) { /* not kept */ }
+  try { localStorage.setItem("fizzyfm.table" + slot, b64u(new Uint8Array(spec.buffer))); } catch (e) { /* not kept */ }
   setTimeout(drawWaves, 200);
 }
 function sendTable(slot) {
@@ -543,11 +553,11 @@ async function start() {
   NP = W.w_np(); PATCH = W.w_patch(); PSIZE = W.w_patch_size();
   for (let i = 0; i < NP; i++) { ids[i] = cstr(W.w_id(i)); ix[ids[i]] = i; }
   build(); panel(); keys();
-  for (let s = 0; s < 3; s++) try { const t = localStorage.getItem("aplat.table" + s); if (t) setUserTable(s, new Int16Array(unb64u(t).buffer)); } catch (e) { /* none kept */ }
+  for (let s = 0; s < 3; s++) try { const t = localStorage.getItem("fizzyfm.table" + s); if (t) setUserTable(s, new Int16Array(unb64u(t).buffer)); } catch (e) { /* none kept */ }
   shadow = patchBytes();
   let first = null;
   try { const h = location.hash.match(/^#s=([\w-]+)/); first = h ? unb64u(h[1]) : null; } catch (e) { first = null; }
-  try { if (!first) { const s = localStorage.getItem("aplat.sound"); if (s) first = Uint8Array.from(atob(s), c => c.charCodeAt(0)); } } catch (e) { /* none kept */ }
+  try { if (!first) { const s = localStorage.getItem("fizzyfm.sound"); if (s) first = Uint8Array.from(atob(s), c => c.charCodeAt(0)); } } catch (e) { /* none kept */ }
   if (first && first.length === PSIZE) setPatch(first);
   undo = []; redo = [];
   refresh();
@@ -555,8 +565,11 @@ async function start() {
   $("preset").onchange = () => { W.w_preset(+$("preset").value); sync(); };
   $("name").onchange = () => { const n = $("name").value.toUpperCase().replace(/[^ -_]/g, "").slice(0, 11), m = mem8(); for (let i = 0; i < 12; i++) m[PATCH + NP + i] = n.charCodeAt(i) || 0; W.w_changed(); sync(); };
   $("bundo").onclick = () => step(undo, redo); $("bredo").onclick = () => step(redo, undo);
+  for (let i = 0; i < W.w_nrk(); i++) $("rkind").add(new Option(cstr(W.w_rk_name(i)), i));
+  const dice = m => { const k = W.w_random(+$("rkind").value, +$("rchaos").value, m); afterPanel(); status(m ? "mutated" : "the dice: " + cstr(W.w_rk_name(k)).toLowerCase()); };
+  $("brand").onclick = () => dice(0); $("bmut").onclick = () => dice(1);
   addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && !e.target.matches("input")) { if (e.key === "z") { e.preventDefault(); step(undo, redo); } if (e.key === "y") { e.preventDefault(); step(redo, undo); } } });
-  $("bsave").onclick = () => download((nameNow() || "sound").toLowerCase().replace(/\W+/g, "-") + ".aplat.json", toJSON());
+  $("bsave").onclick = () => download((nameNow() || "sound").toLowerCase().replace(/\W+/g, "-") + ".fizzy.json", toJSON());
   $("bopen").onclick = () => $("fopen").click();
   $("fopen").onchange = async e => { try { fromJSON(await e.target.files[0].text()); status("opened"); } catch (x) { status(x.message); } e.target.value = ""; };
   $("bshare").onclick = async () => { location.hash = "s=" + b64u(patchBytes()); try { await navigator.clipboard.writeText(location.href); status("the link is copied"); } catch (e) { status("the link is in the address bar"); } };
@@ -576,7 +589,7 @@ async function start() {
   $("bwsend").onclick = () => sendTable(+$("wslot").value);
   requestAnimationFrame(frame);
   status("ready");
-  window.aplat = { W, setParam, get, ix, toJSON, fromJSON, tableFrom, setUserTable, fromDevice, patchBytes, step, undo, redo, nameNow, sync, q, midiIn };
+  window.fizzy = { W, setParam, get, ix, toJSON, fromJSON, tableFrom, setUserTable, fromDevice, patchBytes, step, undo, redo, nameNow, sync, q, midiIn };
 }
 start().catch(e => { status("could not start: " + e.message); console.error(e); });
 </script>
