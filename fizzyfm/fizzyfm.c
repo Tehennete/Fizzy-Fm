@@ -24,6 +24,7 @@ static const hb_host_t *H;
 #include "ap_rand.h"
 #include "ap_eng.h"
 #include "ap_seq.h"
+#include "ap_pat.h"
 #include "ap_fx.h"
 #include "ap_ui.h"
 
@@ -180,11 +181,13 @@ static void load_guard(uint32_t dt, uint32_t n, uint32_t act)
 static void render(int32_t *out, uint32_t n)
 {
     static int32_t bl[SUBN], br[SUBN];
-    uint32_t t0 = H->ticks(), done = 0, act = 0, dt;
+    uint32_t t0 = H->ticks(), done = 0, act = 0, dt, es = sq.ext_start, et = sq.ext_stop;
     seq_begin(n);
+    pl_begin(es, et);
     while (done < n) {
         uint32_t m = n - done > SUBN ? SUBN : n - done, i, v;
         seq_run(m);
+        pl_run(m);
         eng_tick_global();
         for (i = 0; i < m; i++)
             bl[i] = br[i] = 0;
@@ -196,6 +199,7 @@ static void render(int32_t *out, uint32_t n)
             lfo3_fade = 0;                      /* silence: LFO 3's fade starts again with the next note */
         fx_run(bl, br, m);
         master_run(bl, br, out + 2u * done, m);
+        pl_click_mix(out + 2u * done, m);
         done += m;
     }
     eng_active = act;
@@ -322,8 +326,13 @@ static void handle_cc(uint32_t num, uint32_t val)
 static void note(uint32_t ch, uint32_t key, uint32_t vel)
 {
     (void)ch;
-    if (key < 128u)
-        ev_put(vel ? EV_ON : EV_OFF, key, vel > 127u ? 127u : vel);
+    if (key >= 128u)
+        return;
+    ev_put(vel ? EV_ON : EV_OFF, key, vel > 127u ? 127u : vel);
+    if (vel)                                    /* (the sequencer, when it records) */
+        rec_note_on(key, vel > 127u ? 127u : vel);
+    else
+        rec_note_off(key);
 }
 
 static void cc(uint32_t ch, uint32_t num, uint32_t val)
@@ -361,41 +370,13 @@ static void say(const char *s)
     ui_s.d_head = 1;
 }
 
-/* ---- the dice on the panel (the RANDOM page): ROLL throws a new sound, MUTATE moves the one there is, and a
- * turn to the left of either goes back: the last eight sounds are kept, the one before the dice among them */
-static patch_t rq;
-static uint32_t same_patch(const patch_t *a, const patch_t *b)
-{
-    const uint8_t *x = (const uint8_t *)a, *y = (const uint8_t *)b;
-    uint32_t i;
-    for (i = 0; i < sizeof(patch_t); i++)
-        if (x[i] != y[i])
-            return 0;
-    return 1;
-}
-static void rand_keep(const patch_t *q, uint32_t how)
-{
-    uint32_t i;
-    if (rd.n && rd.pos + 1u < rd.n)
-        rd.n = (uint8_t)(rd.pos + 1u);          /* thrown from further back: what was ahead is gone */
-    if (rd.n == RH) {
-        for (i = 1; i < RH; i++) {
-            rh[i - 1u] = rh[i];
-            rd.how[i - 1u] = rd.how[i];
-        }
-        rd.n--;
-    }
-    rh[rd.n] = *q;
-    rd.how[rd.n] = (uint8_t)how;
-    rd.pos = rd.n++;
-}
+/* ---- the dice on the panel (the RANDOM page): SEL throws over the last throw, held it keeps it; KEPT goes back
+ * through the sounds kept and the one before the dice */
 static void rand_show(uint32_t hush)
 {
     if (hush)
         ev_put(EV_HUSH, 0, 0);
-    cur = rh[rd.pos];
     patch_check(&cur);
-    ui_s.rnd = rd.how[rd.pos] != 0;
     ui_s.edited = 1;
     ui_s.compare = 0;
     ui_s.slot = 0;
@@ -404,38 +385,68 @@ static void rand_show(uint32_t hush)
     if (tx_linked)
         tx_dump = 0;                            /* the editor follows */
 }
-static void rand_turn(uint32_t mutate, int32_t clicks)
+static uint32_t rand_throw(void)
 {
-    uint32_t seed;
-    if (ui_s.compare) {                         /* (REC was showing the stored sound) */
+    uint32_t seed = H->rand() ^ (H->ms() * 2654435761u) ^ (++rd.count << 16), k = RD_MUT;
+    if (ui_s.compare) {                         /* (the stored sound was showing) */
         cur = edit;
         ui_s.compare = 0;
     }
-    if (!rd.n || !same_patch(&rh[rd.pos], &cur))
-        rand_keep(&cur, 0);                     /* the sound as it is now: a turn back finds it */
-    if (clicks < 0) {
-        if (!rd.pos) {
-            say("THE FIRST");
-            return;
-        }
-        rd.pos--;
-        rand_show(1);
-        return;
+    if (!rd.trying && !rd.pos) {                /* the sound before the dice: KEPT's first */
+        rbefore = cur;
+        rd.before = 1;
     }
-    if (!mutate && rd.pos + 1u < rd.n) {        /* forward again through what was thrown */
-        rd.pos++;
-        rand_show(1);
-        return;
-    }
-    seed = H->rand() ^ (H->ms() * 2654435761u) ^ (++rd.count << 16);
-    if (mutate) {
-        rq = cur;
-        rand_mutate(&rq, seed, rd.chaos);
-        rand_keep(&rq, RD_MUT);
+    if (rd.what) {
+        rand_mutate(&cur, seed, rd.chaos);
+        if (!rd.trying)
+            rd.tkind = RD_MUT;
     } else {
-        rand_keep(&rq, rand_patch(&rq, &cur, seed, rd.kind, rd.chaos));
+        patch_t was = cur;
+        k = rand_patch(&cur, &was, seed, rd.kind, rd.chaos);
+        rd.tkind = (uint8_t)k;
     }
-    rand_show(!mutate);
+    rd.trying = 1;
+    ui_s.rnd = 1;
+    rand_show(!rd.what);
+    return k;
+}
+static void rand_keep(void)
+{
+    uint32_t i;
+    if (rd.n == RH) {                           /* (eight: the oldest goes) */
+        for (i = 1; i < RH; i++) {
+            rh[i - 1u] = rh[i];
+            rd.how[i - 1u] = rd.how[i];
+        }
+        rd.n--;
+    }
+    rh[rd.n] = cur;
+    rd.how[rd.n] = rd.trying ? rd.tkind : RD_MUT;
+    rd.n++;
+    rd.pos = rd.n;
+    rd.trying = 0;
+    {
+        static char t[12] = "KEPT 0";
+        t[5] = (char)('0' + rd.n);
+        say(t);
+    }
+    ui_s.d_tile = 15;
+    ui_s.d_disp = 1;
+}
+static void rand_browse(int32_t clicks)         /* KEPT: 0 the sound before the dice, 1.. the ones kept */
+{
+    int32_t from = rd.trying ? (int32_t)rd.n + 1 : (int32_t)rd.pos, to = clampi(from + clicks, rd.before ? 0 : 1, (int32_t)rd.n);
+    if (to < 1 && !rd.before) {
+        say("NOTHING KEPT");
+        return;
+    }
+    if (to == (int32_t)rd.pos && !rd.trying)
+        return;
+    rd.pos = (uint8_t)to;
+    rd.trying = 0;
+    cur = to ? rh[to - 1] : rbefore;
+    ui_s.rnd = to != 0;
+    rand_show(1);
 }
 
 /* ---- the keys: the panel is the module's (HB_F_PANEL), so it plays them, in its own octave, and sends them on
@@ -443,6 +454,35 @@ static void rand_turn(uint32_t mutate, int32_t clicks)
 #define KEY0 53                                 /* key 0 is F3 */
 static uint8_t kb_note[27];                     /* the note key k started, 0: none */
 static uint8_t oct_held;                        /* OCT - and OCT + held (bits 0, 1) */
+/* the STEPS page, the sequencer stopped: the keys write the step (a chord: the keys down together), and when all
+ * are let go the next step is the one edited */
+static uint8_t step_down, step_wrote;
+static void step_key(uint32_t key, uint32_t vel, uint32_t down)
+{
+    const page_t *pg = &PAGES[ui_s.page];
+    pat_t *p = &pats[pl.pat];
+    if (pg->disp != DS_SEQ || pg->arg != 1u || pl.run)
+        return;
+    if (down) {
+        if (!step_down++) {                     /* a new chord: the step's notes go */
+            pat_snapshot(pl.pat);
+            step_clear(p, ui_s.step);
+        }
+        pat_put(p, ev_make(ui_s.step * SQ_SUB, key, vel, SQ_SUB - 1u));
+        step_wrote = 1;
+        pat_dirty = 1;
+        pat_ver++;
+        ui_s.d_tile = 15;
+        return;
+    }
+    if (step_down && !--step_down && step_wrote) {
+        step_wrote = 0;
+        ui_s.step = (uint8_t)((ui_s.step + 1u) % p->len);
+        pat_ver++;
+        ui_s.d_tile = 15;
+        ui_s.d_disp = 1;
+    }
+}
 static void kb_key(uint32_t kind, uint32_t k, int32_t arg)
 {
     uint32_t n;
@@ -458,12 +498,16 @@ static void kb_key(uint32_t kind, uint32_t k, int32_t arg)
         kb_note[k] = (uint8_t)n;
         ev_put(EV_ON, n, v);
         H->midi_send(0x90u, n, v);
+        rec_note_on(n, v);
+        step_key(n, v, 1);
     } else if (kind == HB_EV_KEY_UP) {
         if (!kb_note[k])
             return;
         ev_put(EV_OFF, kb_note[k], 0);
         H->midi_send(0x80u, kb_note[k], 0);
+        rec_note_off(kb_note[k]);
         kb_note[k] = 0;
+        step_key(0, 0, 0);
     } else if (kb_note[k]) {                    /* its pressure */
         n = arg < 0 ? 0u : arg > 127 ? 127u : (uint32_t)arg;
         ev_put(EV_PRESS, kb_note[k], n);
@@ -481,6 +525,84 @@ static void oct_leds(uint32_t now)
     oct_led = (uint8_t)want;
     H->led(HB_BTN_OCT_DOWN, want & 1u);
     H->led(HB_BTN_OCT_UP, want >> 1 & 1u);
+}
+
+/* a knob turned fast goes further: from how soon it moved again, up to eight steps a click (a short range: one) */
+static uint32_t enc_t[8];
+static int32_t accel(uint32_t enc, int32_t clicks, uint32_t range)
+{
+    uint32_t now = H->ms() | 1u, dt = enc_t[enc & 7u] ? now - enc_t[enc & 7u] : 1000u;   /* (0: never turned) */
+    int32_t m;
+    enc_t[enc & 7u] = now;
+    if (range < 24u)
+        return clicks;
+    m = dt < 16u ? 8 : dt < 32u ? 4 : dt < 60u ? 2 : 1;
+    if (range < 80u && m > 4)
+        m = 4;
+    return clicks * m;
+}
+
+static void pat_touch(void)                     /* a pattern edited from the panel */
+{
+    pat_dirty = 1;
+    pat_ver++;
+}
+static void own_knob(uint32_t what, int32_t clicks)   /* RANDOM's and the sequencer's cards */
+{
+    pat_t *p = &pats[pl.pat];
+    uint32_t e;
+    switch (what) {
+    case PG_SLOTS: rand_browse(clicks); return;
+    case PG_KIND: rd.kind = (uint8_t)clampi((int32_t)rd.kind + clicks, 0, (int32_t)NRK - 1); break;
+    case PG_CHAOS: rd.chaos = (uint8_t)clampi((int32_t)rd.chaos + accel(1, clicks, 128), 0, 127); break;
+    case PG_WHAT: rd.what = clicks > 0; ui_s.d_disp = 1; break;
+    case PG_PAT: {
+        uint32_t np = (uint32_t)clampi((int32_t)pl.next + clicks, 0, SQ_PAT - 1);
+        pl.next = (uint8_t)np;
+        if (!pl.run)
+            pl.pat = (uint8_t)np;
+        pb.cur = (uint8_t)np;
+        if (ui_s.step >= pats[np].len)
+            ui_s.step = 0;
+        pat_dirty = 1;
+        ui_s.d_disp = 1;
+        ui_s.d_tile = 15;
+        return;
+    }
+    case PG_LEN:
+        p->len = (uint8_t)clampi((int32_t)p->len + accel(2, clicks, 64), 1, 64);
+        if (pl.sp >= (uint32_t)p->len * SQ_SUB)
+            pl.sp = 0;
+        if (ui_s.step >= p->len)
+            ui_s.step = (uint8_t)(p->len - 1u);
+        pat_touch();
+        ui_s.d_disp = 1;
+        break;
+    case PG_QUANT: p->quant = clicks > 0; pat_touch(); break;
+    case PG_CLICK: pb.click = (uint8_t)clampi((int32_t)pb.click + clicks, 0, 2); pat_dirty = 1; break;
+    case PG_STEP:
+        ui_s.step = (uint8_t)(((int32_t)ui_s.step + clicks % (int32_t)p->len + (int32_t)p->len) % (int32_t)p->len);
+        ui_s.d_disp = 1;
+        ui_s.d_tile = 15;
+        return;
+    default:                                    /* the step's notes */
+        if (!step_first(ui_s.step, &e)) {
+            if (what != PG_SNOTE)
+                return;
+            pat_put(p, ev_make(ui_s.step * SQ_SUB, (uint32_t)clampi(60 + clicks, 0, 127), 100u, SQ_SUB - 1u));
+        } else if (what == PG_SNOTE) {
+            step_edit(p, ui_s.step, clicks, 0, 0);
+        } else if (what == PG_SVEL) {
+            step_edit(p, ui_s.step, 0, (uint32_t)clampi((int32_t)EV_VEL(e) + accel(3, clicks, 128), 1, 127), 0);
+        } else {
+            int32_t st = (int32_t)((len_sub(e & 127u) + SQ_SUB / 2u) / SQ_SUB);
+            step_edit(p, ui_s.step, 0, 0, (uint32_t)clampi((st ? st : 1) + clicks, 1, 64));
+        }
+        pat_touch();
+        ui_s.d_disp = 1;
+        ui_s.d_tile = 15;
+        return;
+    }
 }
 
 static void knob(uint32_t k, int32_t clicks)
@@ -505,24 +627,13 @@ static void knob(uint32_t k, int32_t clicks)
         }
         return;
     }
-    if (pg->par[k] >= PG_MUT) {                 /* the dice */
-        if (pg->par[k] == PG_ROLL || pg->par[k] == PG_MUT) {
-            rand_turn(pg->par[k] == PG_MUT, clicks);
-            return;
-        }
-        if (pg->par[k] == PG_KIND) {
-            rd.kind = (uint8_t)clampi((int32_t)rd.kind + clicks, 0, (int32_t)NRK - 1);
-        } else {
-            if (clicks > 1 || clicks < -1)
-                clicks *= clicks > 3 || clicks < -3 ? 4 : 2;
-            rd.chaos = (uint8_t)clampi((int32_t)rd.chaos + clicks, 0, 127);
-        }
+    if (pg->par[k] >= PG_X) {                   /* the page's own */
+        own_knob(pg->par[k], clicks);
         ui_s.d_tile |= (uint8_t)(1u << k);
         return;
     }
     id = page_param(pg, k);
-    if (PDEF[id].max >= 100u && (clicks > 1 || clicks < -1))
-        clicks *= clicks > 3 || clicks < -3 ? 4 : 2;        /* a fast turn goes further */
+    clicks = accel(4u + k, clicks, PDEF[id].fmt == F_LIST ? 0u : PDEF[id].max + 1u);   /* a fast turn goes further */
     v = cur.p[id];
     nv = clampi(v + clicks, 0, PDEF[id].max);
     if (nv == v)
@@ -568,6 +679,120 @@ static void save_now(void)
     ui_leds();
 }
 
+/* ---- the sequencer's lights: PLAY lit while it plays, dark a moment on each beat; REC lit while it records,
+ * blinking while it counts in. And its patterns kept in the flash (bank 2), a second after it stopped */
+static void tr_leds(uint32_t now)
+{
+    static uint32_t beat = 0xFFFFFFFFu, beat_t;
+    uint32_t want;
+    if (pl.beat != beat) {
+        beat = pl.beat;
+        beat_t = now;
+    }
+    want = (pl.run && (pl.rec == 1u ? (now / 120u) & 1u : now - beat_t > 90u)) |
+           (uint32_t)(pl.rec == 2u || (pl.rec == 1u && (now / 250u) & 1u)) << 1;
+    if (want == tr_led)
+        return;
+    tr_led = (uint8_t)want;
+    H->led(HB_BTN_PLAY, want & 1u);
+    H->led(HB_BTN_REC, want >> 1 & 1u);
+}
+static void pat_service(uint32_t now)
+{
+    static uint32_t seen;
+    if (!pat_dirty || pl.run) {
+        seen = 0;
+        return;
+    }
+    if (!seen) {
+        seen = now | 1u;
+        return;
+    }
+    if (now - seen < 1000u || !HB_HOST_HAS(H, bank_save_n))
+        return;
+    pat_dirty = 0;
+    seen = 0;
+    if (H->bank_save_n(2, &pb, sizeof pb) < 0)
+        say("PATTERNS NOT SAVED");
+}
+
+/* ---- SEL: what this page does. RANDOM: throw (held: keep it); SEQUENCER: undo the last pass (again: redo); STEPS:
+ * clear the step; MATRIX: the next slot */
+static uint32_t sel_t, rec_t, rec_did, home_t;
+static void pat_undo_swap(void)
+{
+    pat_t t;
+    if (pat_undo_of >= SQ_PAT) {
+        say("NOTHING TO UNDO");
+        return;
+    }
+    t = pats[pat_undo_of];
+    pats[pat_undo_of] = pat_undo;
+    pat_undo = t;
+    say("UNDONE");
+    pat_touch();
+    ui_s.d_disp = 1;
+    ui_s.d_tile = 15;
+}
+static void sel_action(void)
+{
+    const page_t *pg = &PAGES[ui_s.page];
+    if (pg->disp == DS_RAND) {
+        rand_throw();
+    } else if (pg->disp == DS_SEQ && pg->arg) {
+        pat_snapshot(pl.pat);
+        step_clear(&pats[pl.pat], ui_s.step);
+        pat_touch();
+        ui_s.d_disp = 1;
+        ui_s.d_tile = 15;
+    } else if (pg->disp == DS_SEQ) {
+        pat_undo_swap();
+    } else if (pg->disp == DS_MOD) {
+        ui_s.slot = (uint8_t)((ui_s.slot + 1u) & 7u);
+        ui_s.d_disp = 1;
+        ui_s.d_tile = 15;
+    }
+}
+static void sel_held(void)                      /* SEL held 0.6 s */
+{
+    if (PAGES[ui_s.page].disp == DS_RAND)
+        rand_keep();
+}
+/* REC: stopped, a bar counted in and then recording; playing, recording on or off. Held 1.5 s: the pattern
+ * cleared (and what the press did undone) */
+static void rec_press(void)
+{
+    rec_t = H->ms() | 1u;
+    if (!pl.run) {
+        pat_snapshot(pl.pat);
+        pl.req = 3u;
+        rec_did = 1;
+    } else if (pl.rec) {
+        pl.rec = 0;
+        pat_dirty = 1;
+        rec_did = 2;
+    } else {
+        pat_snapshot(pl.pat);
+        pl.rec = 2u;
+        rec_did = 3;
+    }
+}
+static void rec_held(void)
+{
+    static char t[24] = "PATTERN A CLEARED";
+    if (rec_did == 1u)
+        pl.req = 2u;
+    else if (rec_did == 3u)
+        pl.rec = 0;
+    if (rec_did != 1u)
+        pat_snapshot(pl.pat);
+    pats[pl.pat].n = 0;
+    t[8] = (char)('A' + pl.pat);
+    say(t);
+    pat_touch();
+    ui_s.d_disp = 1;
+}
+
 static void ui(uint32_t ev, int32_t arg)
 {
     uint32_t id = HB_EV_ID(ev), i, kind = HB_EV_KIND(ev);
@@ -585,15 +810,40 @@ static void ui(uint32_t ev, int32_t arg)
         ui_s.d_top = 1;
         return;
     }
+    if (kind == HB_EV_BTN_UP) {
+        if (id == HB_BTN_SEL && sel_t) {        /* SEL let go before it was held: the page's action */
+            sel_t = 0;
+            sel_action();
+        }
+        if (id == HB_BTN_REC)
+            rec_t = 0;
+        return;
+    }
     if (kind == HB_EV_BTN_DOWN) {
         if (ui_s.save) {
             if (id == HB_BTN_SAVE) {
                 save_now();
                 return;
             }
+            if (id == HB_BTN_REC) {             /* REC: the stored sound and the edited one, by turns */
+                if (!ui_s.compare && ui_s.edited) {
+                    edit = cur;
+                    cur = stored;
+                    ui_s.compare = 1;
+                } else if (ui_s.compare) {
+                    cur = edit;
+                    ui_s.compare = 0;
+                }
+                ui_s.d_head = 1;
+                ui_s.d_tile = 15;
+                return;
+            }
             ui_s.save = 0;                      /* any other button: no */
-            ui_s.d_head = 1;
-            ui_s.d_disp = 1;
+            if (ui_s.compare) {
+                cur = edit;
+                ui_s.compare = 0;
+            }
+            ui_dirty_all();
             ui_leds();
         }
         if (id == HB_BTN_SAVE) {
@@ -601,19 +851,16 @@ static void ui(uint32_t ev, int32_t arg)
             ui_s.save_to = (uint8_t)(ui_s.preset >= NFACTORY ? ui_s.preset - NFACTORY : 0u);
             ui_s.d_head = 1;
             ui_leds();
-        } else if (id == HB_BTN_REC) {          /* the stored sound and the edited one, by turns */
-            if (!ui_s.compare && ui_s.edited) {
-                edit = cur;
-                cur = stored;
-                ui_s.compare = 1;
-            } else if (ui_s.compare) {
-                cur = edit;
-                ui_s.compare = 0;
-            }
-            ui_dirty_all();
-            ui_leds();
-        } else if (id == HB_BTN_HOME) {         /* HOME: the PLAY page */
-            ui_go(0);
+        } else if (id == HB_BTN_PLAY) {         /* the sequencer: start, stop */
+            pl.req = pl.run ? 2u : 1u;
+        } else if (id == HB_BTN_REC) {
+            rec_press();
+        } else if (id == HB_BTN_SEL) {          /* the page's action, when let go (held: another) */
+            sel_t = H->ms() | 1u;
+        } else if (id == HB_BTN_HOME) {         /* HOME: PLAY; twice quickly: RANDOM */
+            uint32_t now = H->ms();
+            ui_go(now - home_t < 400u && ui_s.page == 0u ? 1u : 0u);
+            home_t = now;
         } else if (PAGES[ui_s.page].btn == id) { /* again: the next page of the section (round) */
             for (i = 1; i <= NPAGES; i++) {
                 uint32_t p = (ui_s.page + i) % NPAGES;
@@ -644,9 +891,7 @@ static void ui(uint32_t ev, int32_t arg)
             say("MIDI CLOCK LEADS");
             break;
         }
-        if (arg > 1 || arg < -1)
-            arg *= arg > 3 || arg < -3 ? 4 : 2;
-        nv = clampi((int32_t)cur.p[P_TEMPO] + arg, 0, PDEF[P_TEMPO].max);
+        nv = clampi((int32_t)cur.p[P_TEMPO] + accel(0, arg, 128), 0, PDEF[P_TEMPO].max);
         if (nv != cur.p[P_TEMPO]) {
             cur.p[P_TEMPO] = (uint8_t)nv;
             ui_s.edited = 1;
@@ -661,7 +906,7 @@ static void ui(uint32_t ev, int32_t arg)
     }
     case HB_ENC_ALGORITHM: {
         uint32_t p = PAGES[ui_s.page].col == K_OSCB ? P_B_WAVE : P_A_WAVE;
-        int32_t nv = clampi((int32_t)cur.p[p] + arg, 0, (int32_t)(AP_NTAB + NUWT) - 1);
+        int32_t nv = clampi((int32_t)cur.p[p] + accel(1, arg, 64), 0, (int32_t)(AP_NTAB + NUWT) - 1);
         if (nv != cur.p[p]) {
             cur.p[p] = (uint8_t)nv;
             ui_s.edited = 1;
@@ -678,6 +923,7 @@ static void ui(uint32_t ev, int32_t arg)
             ui_s.d_head = 1;
         } else {
             int32_t n = (int32_t)(NFACTORY + NUSER);
+            arg = accel(2, arg, 64);
             preset_load((uint32_t)((((int32_t)ui_s.preset + arg) % n + n) % n));
         }
         break;
@@ -726,6 +972,16 @@ static void draw(uint32_t full)
             say("NOT SAVED");
     }
     oct_leds(now);
+    if (sel_t && now - sel_t >= 600u) {         /* SEL held */
+        sel_t = 0;
+        sel_held();
+    }
+    if (rec_t && now - rec_t >= 1500u) {        /* REC held */
+        rec_t = 0;
+        rec_held();
+    }
+    tr_leds(now);
+    pat_service(now);
     hb_key0(H, KEY0 + 12 * kb_oct);
     if (wt_service())
         return;                                 /* a frame of a table took this pass */
@@ -784,6 +1040,15 @@ static int init(const hb_host_t *h)
     }
     for (i = 0; i < NUSER; i++)
         patch_check(&user[i]);
+    if (!HB_HOST_HAS(H, bank_load_n) || H->bank_load_n(2, &pb, sizeof pb) != (int)sizeof pb || pb.magic != PB_MAGIC)
+        pb_init();                              /* the patterns: none yet */
+    for (i = 0; i < SQ_PAT; i++) {
+        if (!pats[i].len || pats[i].len > 64u) pats[i].len = 16;
+        if (pats[i].n > SQ_EV) pats[i].n = 0;
+    }
+    if (pb.cur >= SQ_PAT || pb.click > 2u)
+        pb.cur = pb.click = 0;
+    pl.pat = pl.next = pb.cur;
     if (!HB_HOST_HAS(H, bank_load_n) || H->bank_load_n(1, uwt, sizeof uwt) != (int)sizeof uwt)
         for (i = 0; i < NUWT * AP_NF; i++)      /* no tables of your own yet: a sine in every frame */
             uwt[i / AP_NF][(i % AP_NF) * AP_NH * 2u] = 15556;
@@ -802,6 +1067,9 @@ static int init(const hb_host_t *h)
 static void release(void)
 {
     uint32_t i;
+    pl.run = 0;
+    pl.rec = 0;
+    pl.nsound = 0;
     for (i = 0; i < 27u; i++)
         kb_note[i] = 0;
     for (i = 0; i < NV; i++)

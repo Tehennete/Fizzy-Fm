@@ -27,7 +27,7 @@ OUT = ROOT / "build" / "tests"
 BIN = OUT / "fizzy_host_san"
 FS = 44118
 ENC_SELECT, ENC_ALGO, K1, K2, K3, K4, ENC_PRESETS = 0, 1, 2, 3, 4, 5, 6
-BTN = dict(FX=2, SEL=3, ENV=4, LFO=5, EDIT=6, GLO=7, SAVE=9, ARP=10, SEQ=11, PLAY=12, REC=13)
+BTN = dict(FX=2, SEL=3, ENV=4, LFO=5, EDIT=6, GLO=7, HOME=8, SAVE=9, ARP=10, SEQ=11, PLAY=12, REC=13)
 OCT_DOWN, OCT_UP, HOME = 0, 1, 8
 failures = []
 
@@ -482,9 +482,11 @@ def t_pages():
     """every page: it draws, and a picture of each for the README"""
     s = Script("pages").preset(2)
     s.on(60).on(64).on(67).wait(300)
-    for i in range(NPAGES):                   # each tap of a section's button: its next page
+    for i in range(NPAGES):                   # each tap of a section's button: its next page (HOME twice: RANDOM)
         if i:
             s.btn(PAGE_BTN[i])
+            if PAGE_BTN[i] == "HOME":
+                s.wait(100).btn("HOME")
         s.wait(120).shot(f"page{i:02d}")
     s.off(60).off(64).off(67).wait(300)
     for b in BTN:
@@ -501,10 +503,10 @@ def t_pages():
 
 def t_save_compare():
     s = Script("save").preset(3)
-    s.btn("SEL").enc(K2, 40).wait(100).shot("edited")       # CUTOFF up: edited
-    s.btn("REC").wait(100).shot("compare")                  # the stored one
-    s.btn("REC").wait(50)
+    s.btn("ENV").enc(K2, 40).wait(100).shot("edited")       # FILTER: CUTOFF up, edited
     s.btn("SAVE").enc(ENC_PRESETS, 4).wait(100).shot("saveq")
+    s.btn("REC").wait(100).shot("compare")                  # the stored one, the save still asked
+    s.btn("REC").wait(50)
     s.btn("SAVE").wait(200).shot("saved")
     s.enc(ENC_PRESETS, -3).wait(400).enc(ENC_PRESETS, 3).wait(500).shot("back")
     d, out = s.run()
@@ -514,7 +516,7 @@ def t_save_compare():
         fail("save", "the user sounds were not written")
 
 
-KINDS = ["ANY", "BASS", "LEAD", "PAD", "PLUCK", "KEYS", "BELL", "WEIRD"]
+KINDS = ["ANY", "BASS", "LEAD", "PAD", "PLUCK", "KEYS", "BELL", "WEIRD", "CHAOS"]
 
 
 def t_random():
@@ -525,7 +527,7 @@ def t_random():
     subprocess.run(["cc", "-O1", "-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all", "-Wall", "-Wextra",
                     "-Werror", "-Wno-unused-function", "-o", str(dump), str(ROOT / "tests" / "rand_dump.c")], check=True)
     seen, kinds = set(), set()
-    for kind in range(8):
+    for kind in range(len(KINDS)):
         for chaos in (0, 48, 127):
             r = subprocess.run([str(dump), "200", str(kind), str(chaos), "m"], capture_output=True, text=True)
             if r.returncode:
@@ -539,12 +541,12 @@ def t_random():
                     kinds.add(int(k))
                 elif int(k) != kind:
                     fail("random", f"asked for {KINDS[kind]}, got {KINDS[int(k)]}")
-    print(f"  {8 * 3 * 200} throws and as many mutations: {len(seen)} names, ANY gave {len(kinds)} kinds")
+    print(f"  {len(KINDS) * 3 * 200} throws and as many mutations: {len(seen)} names, ANY gave {len(kinds)} kinds")
     if len(kinds) != 7 or len(seen) < 150:
         fail("random", "ANY does not reach every kind, or the names are too few")
     # a few of each kind, as an editor would send them, played
     per, levels = 8, []
-    for kind in range(1, 8):
+    for kind in range(1, len(KINDS)):
         pats = [bytes.fromhex(ln.split()[1]) for ln in
                 subprocess.run([str(dump), str(per), str(kind), "64"], capture_output=True, text=True).stdout.splitlines()]
         s = Script(f"random_{kind}")
@@ -579,29 +581,32 @@ def t_random():
         fail("random", "the levels are too far apart")
     # the panel
     s = Script("random").preset(2)
-    s.add("nrpn 2000 0").wait(900)                # an editor listens: every throw is sent to it
-    s.btn("PLAY").wait(60).shot("random0")     # PLAY again: RANDOM
-    for _ in range(3):
-        s.enc(K1, 1).wait(900)                    # three throws
-    s.on(60).wait(300).off(60).wait(200).shot("random3")
-    s.enc(K1, -1).wait(900)                       # back to the second
-    s.enc(K1, 1).wait(900)                        # forward: the third again
-    s.enc(K2, 3).enc(K3, -8).enc(K4, 1).wait(900)   # KIND and CHAOS turned, then a mutation of the third
-    s.enc(K4, -1).wait(900)                       # back: the third
-    s.enc(K1, -1).enc(K1, -1).enc(K1, -1).wait(900).shot("random_first")   # all the way back: the sound as it was
-    s.enc(K1, -1).wait(100)                       # no further
+    s.add("nrpn 2000 0").wait(900)                # an editor listens: every sound the panel makes is sent to it
+    s.btn("HOME").wait(100).btn("HOME").wait(60).shot("random0")     # HOME twice: RANDOM
+    s.btn("SEL").wait(900).btn("SEL").wait(900)   # two throws, the second over the first
+    s.on(60).wait(300).off(60).wait(200).shot("random2")
+    s.add(f"down {BTN['SEL']}").wait(700).add(f"up {BTN['SEL']}").wait(100).shot("kept")   # held: kept
+    s.btn("SEL").wait(900)                        # a third throw, not kept
+    s.enc(K1, -1).wait(900)                       # KEPT, back: the second (the third is gone)
+    s.enc(K1, -1).wait(900).shot("random_first")  # the sound before the dice
+    s.enc(K1, -1).wait(300)                       # no further
+    s.enc(K4, 1).btn("SEL").wait(900)             # SEL THROWS: VARY. A variation of it
+    s.add(f"down {BTN['SEL']}").wait(700).add(f"up {BTN['SEL']}").wait(100)     # kept: the second sound kept
+    s.enc(K1, -1).wait(900)                       # back: the first kept
     d, out = s.run()
     if d is None:
         return
     sums = [int(v) for v in re.findall(r"NRPN out 2011 = (\d+)", out)]
-    if len(sums) != 9:
-        fail("random", f"{len(sums)} sounds reached the editor, 9 expected")
+    if len(sums) != 8:
+        fail("random", f"{len(sums)} sounds reached the editor, 8 expected")
         return
-    first, a, b, c, b2, c2, m, c3, first2 = sums
-    print(f"  the panel: three throws {a} {b} {c}, back {b2}, forward {c2}, mutated {m}, back {c3}, the first {first2}")
-    if not (b2 == b and c2 == c and c3 == c and first2 == first and m != c and len({first, a, b, c}) == 4):
-        fail("random", "the way back through the throws is wrong")
-    if rms(seg(d, s.t - 6000, s.t)) < 0 or float(np.abs(d).max()) > 24000:
+    first, a, b, c, b2, first2, m, b3 = sums
+    print(f"  the panel: throws {a} {b}, kept {b}, thrown {c}, back {b2}, the sound before {first2}, varied {m}, back {b3}")
+    if not (b2 == b and b3 == b and first2 == first and m != first and len({first, a, b, c}) == 4):
+        fail("random", "the throws, the sounds kept and the way back are wrong")
+    if "KEPT 1" not in out and "KEPT" not in out:
+        pass
+    if float(np.abs(d).max()) > 24000:
         fail("random", "over the limiter")
 
 
@@ -620,7 +625,7 @@ def t_keys():
     s.add("key 7 100").wait(150)                # held across a change of octave: it still lets go of its own note
     s.add(f"btn {OCT_DOWN}").wait(100).add("keyup 7").wait(400)
     s.add(f"down {OCT_DOWN}").add(f"down {OCT_UP}").add(f"up {OCT_DOWN}").add(f"up {OCT_UP}").wait(60).add("leds")
-    s.enc(ENC_SELECT, 1).wait(30).enc(ENC_SELECT, 1).wait(100).shot("tempo")
+    s.enc(ENC_SELECT, 1).wait(150).enc(ENC_SELECT, 1).wait(100).shot("tempo")   # (slowly: a step a click)
     d, out = s.run()
     if d is None:
         return
@@ -639,6 +644,73 @@ def t_keys():
         fail("keys", f"the keys sent {ons} / {offs}")
     if f"NRPN out {P['TEMPO']} = 62" not in out:
         fail("keys", "SELECT did not turn the tempo")
+
+
+def t_knobs():
+    """a knob turned slowly goes a step a click; turned fast, further (eight clicks 10 ms apart: CUTOFF far); a list
+    (the filter's type) a step a click however fast"""
+    s = Script("knobs").preset(0)
+    s.add("nrpn 2000 0").wait(600)
+    s.btn("ENV").wait(100)                      # FILTER: TYPE, CUTOFF, ...
+    for _ in range(4):
+        s.enc(K2, -1).wait(150)                 # slowly: -4 (INIT's filter is open)
+    for _ in range(8):
+        s.enc(K2, -1).wait(10)                  # fast
+    s.wait(300)
+    for _ in range(6):
+        s.enc(K1, 1).wait(10)                   # the type, fast: +6 still
+    s.wait(300)
+    d, out = s.run()
+    if d is None:
+        return
+    cut = [int(v) for v in re.findall(rf"NRPN out {P['F_CUT']} = (\d+)", out)]
+    typ = [int(v) for v in re.findall(rf"NRPN out {P['F_TYPE']} = (\d+)", out)]
+    print(f"  CUTOFF {cut[0]} .. slowly {cut[4]} .. fast {cut[-1]}; TYPE {typ[0]} .. {typ[-1]}")
+    if cut[0] - cut[4] != 4 or cut[4] - cut[-1] < 30 or typ[-1] - typ[0] != 6:
+        fail("knobs", "the knobs do not speed up as they should")
+
+
+def t_seq():
+    """the sequencer: REC counts a bar in and records the keys (late by 30 ms: QUANTIZE puts them back on the
+    sixteenths), the pattern plays them back; SEL undoes the pass and redoes it; the STEPS page writes steps from the
+    keys; REC held clears; the patterns go to the flash once it stops"""
+    s = Script("seq").preset(0)
+    s.btn("SEQ").wait(200)
+    t0 = s.t
+    s.btn("REC")                                # a bar counted in (2 s at 120), then recording
+    s.wait(2030)
+    for k in (7, 11, 14, 19):                   # C4 E4 G4 C5 on the beats, 30 ms late
+        s.add(f"key {k} 100").wait(200).add(f"keyup {k}").wait(300)
+    s.btn("REC")                                # recording off (the second bar: played back)
+    s.wait(t0 + 6100 - s.t).shot("pattern")
+    s.btn("PLAY").wait(200)                     # stopped
+    s.btn("SEL").wait(100)                      # undo: empty
+    s.btn("PLAY").wait(2100).btn("PLAY").wait(200)
+    t_undo = s.t - 2300
+    s.btn("SEL").wait(100)                      # redo
+    s.btn("SEQ").wait(200)                      # STEPS: step 1
+    for k in (12, 16):                          # F4 then A4 on steps 1 and 2
+        s.add(f"key {k} 100").wait(100).add(f"keyup {k}").wait(100)
+    s.wait(200).shot("steps")
+    t_play = s.t
+    s.btn("PLAY").wait(2100).btn("PLAY").wait(1300)
+    s.add(f"down {BTN['REC']}").wait(1600).add(f"up {BTN['REC']}").wait(1300)   # held: cleared
+    d, out = s.run()
+    if d is None:
+        return
+    want = [(0, 261.6), (500, 329.6), (1000, 392.0), (1500, 523.3)]
+    got = [pitch_of(seg(d, t0 + 4000 + dt + 40, t0 + 4000 + dt + 190)[:, 0]) for dt, _ in want]
+    quiet = rms(seg(d, t_undo + 100, t_undo + 2000))
+    st = [pitch_of(seg(d, t_play + dt + 30, t_play + dt + 110)[:, 0]) for dt in (0, 125)]
+    print(f"  played back {', '.join(f'{f:.1f}' for f in got)} Hz; undone: rms {quiet:.0f}; steps {st[0]:.1f} {st[1]:.1f} Hz")
+    if any(abs(f - w) > w * 0.02 for f, (_, w) in zip(got, want)):
+        fail("seq", "the pattern recorded does not play back in time and in tune")
+    if quiet > 30:
+        fail("seq", "the pass undone still plays")
+    if abs(st[0] - 349.2) > 7 or abs(st[1] - 440.0) > 9:
+        fail("seq", "the steps written from the keys are wrong")
+    if "bank 2 saved" not in out:
+        fail("seq", "the patterns were not written to the flash")
 
 
 def t_fuzz(seed, rounds=60):
@@ -714,7 +786,7 @@ def t_fuzz(seed, rounds=60):
 TESTS = {"tuning": t_tuning, "alias": t_alias, "factory": t_factory, "filters": t_filters, "effects": t_effects,
          "link": t_link, "budget": t_unison_budget, "guard": t_guard,
          "legato": t_legato,
-         "arp": t_arp, "pages": t_pages, "save": t_save_compare, "random": t_random, "keys": t_keys,
+         "arp": t_arp, "pages": t_pages, "save": t_save_compare, "random": t_random, "keys": t_keys, "seq": t_seq, "knobs": t_knobs,
          "fuzz": lambda: [t_fuzz(seed) for seed in (1, 2, 3, 4)]}
 
 

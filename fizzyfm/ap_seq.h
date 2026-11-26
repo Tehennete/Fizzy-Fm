@@ -36,6 +36,7 @@ static struct {
     int32_t gate;                               /* frames until the notes playing are let go */
 } sq;
 static volatile uint32_t seq_ext;               /* MIDI's clock leads (the screen) */
+static void pl_pulse(void);                     /* (the sequencer's, ap_pat.h) */
 
 static void arp_stop(void)
 {
@@ -213,6 +214,7 @@ static void seq_begin(uint32_t n)
         while (sq.ext_pulses) {
             sq.ext_pulses--;
             seq_pulse();
+            pl_pulse();
             if (++sq.ext_n >= 24u) {            /* its tempo, a quarter note at a time */
                 if (sq.ext_frames > 4000u && sq.ext_frames < 132000u)
                     clk_spt = ((sq.ext_frames << 12) / 24u) << 4;

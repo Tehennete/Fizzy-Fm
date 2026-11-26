@@ -13,7 +13,7 @@ from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 SRC, DOCS = ROOT / "build" / "tests", ROOT / "docs"
-ONE = {"play": 0, "osc": 2, "filter": 8, "env": 12, "lfo": 15, "matrix": 18, "fx": 21}      # a page each
+ONE = {"play": 0, "osc": 2, "filter": 8, "env": 10, "lfo": 13, "matrix": 16, "fx": 22, "seq": 29}   # a page each
 COLS, GAP = 7, 4
 
 pages = sorted(SRC.glob("pages-page*.png"))

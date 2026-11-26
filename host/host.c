@@ -125,20 +125,20 @@ static int h_bank_save(const void *p, uint32_t n)
     printf("%6u ms  bank saved (%u B)\n", now_ms, n);
     return 0;
 }
-static uint8_t bank1[HB_BANK_MAX];
-static uint32_t bank1_n;
+static uint8_t bankn[4][HB_BANK_MAX];           /* banks 1..3: the tables, the patterns */
+static uint32_t bankn_n[4];
 static int h_bank_load_n(uint32_t idx, void *p, uint32_t n)
 {
-    if (idx != 1u || !bank1_n) return -1;
-    memcpy(p, bank1, n < bank1_n ? n : bank1_n);
-    return (int)bank1_n;
+    if (!idx || idx > 3u || !bankn_n[idx]) return -1;
+    memcpy(p, bankn[idx], n < bankn_n[idx] ? n : bankn_n[idx]);
+    return (int)bankn_n[idx];
 }
 static int h_bank_save_n(uint32_t idx, const void *p, uint32_t n)
 {
-    if (idx != 1u || n > HB_BANK_MAX) return -1;
-    memcpy(bank1, p, n);
-    bank1_n = n;
-    printf("%6u ms  bank 1 saved (%u B)\n", now_ms, n);
+    if (!idx || idx > 3u || n > HB_BANK_MAX) return -1;
+    memcpy(bankn[idx], p, n);
+    bankn_n[idx] = n;
+    printf("%6u ms  bank %u saved (%u B)\n", now_ms, idx, n);
     return 0;
 }
 static uint32_t h_bank_free(void) { return 7; }

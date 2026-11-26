@@ -201,8 +201,9 @@ function build() {
     c.append(el("div", "l", "CHAOS"), Object.assign(el("input"), { id: "rchaos", type: "range", min: 0, max: 127, value: 48, title: "How wild" }));
     const r = Object.assign(el("button", null, "Roll"), { id: "brand", title: "A new sound (Undo brings the one before back)" });
     const m = Object.assign(el("button", null, "Mutate"), { id: "bmut", title: "This sound, moved a little" });
-    r.style.background = m.style.background = "var(--rand)"; r.style.color = m.style.color = "var(--ink)";
-    b.append(k, c, r, m);
+    const kp = Object.assign(el("button", null, "Keep"), { id: "bkeep", title: "Keep this sound among the ones kept (as SEL held does on the FM-1)" });
+    for (const x of [r, m, kp]) { x.style.background = "var(--rand)"; x.style.color = "var(--ink)"; }
+    b.append(k, c, r, m, kp);
   }
   for (const [title, colour, list, wave] of SECT) {
     const b = card(title, colour);
@@ -568,6 +569,7 @@ async function start() {
   for (let i = 0; i < W.w_nrk(); i++) $("rkind").add(new Option(cstr(W.w_rk_name(i)), i));
   const dice = m => { const k = W.w_random(+$("rkind").value, +$("rchaos").value, m); afterPanel(); status(m ? "mutated" : "the dice: " + cstr(W.w_rk_name(k)).toLowerCase()); };
   $("brand").onclick = () => dice(0); $("bmut").onclick = () => dice(1);
+  $("bkeep").onclick = () => { W.w_keep(); afterPanel(); status("kept: the FM-1's RANDOM page has it among its sounds kept"); };
   addEventListener("keydown", e => { if ((e.ctrlKey || e.metaKey) && !e.target.matches("input")) { if (e.key === "z") { e.preventDefault(); step(undo, redo); } if (e.key === "y") { e.preventDefault(); step(redo, undo); } } });
   $("bsave").onclick = () => download((nameNow() || "sound").toLowerCase().replace(/\W+/g, "-") + ".fizzy.json", toJSON());
   $("bopen").onclick = () => $("fopen").click();

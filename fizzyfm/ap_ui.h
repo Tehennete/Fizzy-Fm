@@ -26,13 +26,22 @@ static const uint16_t COL[NCOL] = {
     HB_RGB(104, 214, 108), HB_RGB(178, 140, 255), HB_RGB(255, 122, 196), HB_RGB(52, 214, 178), HB_RGB(94, 156, 255),
     HB_RGB(200, 200, 200), HB_RGB(186, 236, 64)};
 
-enum { DS_PLAY, DS_WAVE_A, DS_WAVE_B, DS_MIX, DS_FILT, DS_ENV, DS_LFO, DS_MOD, DS_ARP, DS_FX, DS_VOICE, DS_RAND };
+enum { DS_PLAY, DS_WAVE_A, DS_WAVE_B, DS_MIX, DS_FILT, DS_ENV, DS_LFO, DS_MOD, DS_ARP, DS_FX, DS_VOICE, DS_RAND, DS_SEQ };
 #define NOP 0xFFu
-#define PG_SLOT 0xFEu                           /* the matrix: this tile picks the slot */
-#define PG_ROLL 0xFDu                           /* the dice (ap_rand.h): a new sound, or back to the one before */
-#define PG_KIND 0xFCu                           /* ... of which kind */
-#define PG_CHAOS 0xFBu                          /* ... how wild */
-#define PG_MUT 0xFAu                            /* ... the sound there is, moved a little */
+#define PG_SLOT 0xFEu                           /* the matrix: this card picks the slot */
+#define PG_X 0xF0u                              /* the cards from here are the page's own, not a parameter's: */
+#define PG_SLOTS 0xF0u                          /* RANDOM: the sounds kept, the one before the dice first */
+#define PG_KIND 0xF1u                           /* ... which kind SEL throws */
+#define PG_CHAOS 0xF2u                          /* ... how wild */
+#define PG_WHAT 0xF3u                           /* ... NEW sound or a VARIATION of this one */
+#define PG_PAT 0xF4u                            /* SEQUENCER: the pattern (A..D) */
+#define PG_LEN 0xF5u                            /* ... its length in steps */
+#define PG_QUANT 0xF6u                          /* ... notes recorded land on the sixteenths */
+#define PG_CLICK 0xF7u                          /* ... the click */
+#define PG_STEP 0xF8u                           /* STEPS: the step */
+#define PG_SNOTE 0xF9u                          /* ... its notes, up and down */
+#define PG_SVEL 0xFAu                           /* ... their velocity */
+#define PG_SLEN 0xFBu                           /* ... their length in steps */
 typedef struct {
     const char *name;
     uint8_t btn;                                /* the button that goes to it */
@@ -41,25 +50,26 @@ typedef struct {
     uint8_t par[4];
 } page_t;
 static const page_t PAGES[] = {
-    {"PLAY", HB_BTN_PLAY, 1, K_PLAY, DS_PLAY, 0, {P_M1, P_M2, P_M3, P_M4}},
-    {"RANDOM", HB_BTN_PLAY, 1, K_RAND, DS_RAND, 0, {PG_ROLL, PG_KIND, PG_CHAOS, PG_MUT}},
+    {"PLAY", HB_BTN_HOME, 1, K_PLAY, DS_PLAY, 0, {P_M1, P_M2, P_M3, P_M4}},
+    {"RANDOM", HB_BTN_HOME, 1, K_RAND, DS_RAND, 0, {PG_SLOTS, PG_KIND, PG_CHAOS, PG_WHAT}},
     {"OSC A", HB_BTN_EDIT, 1, K_OSCA, DS_WAVE_A, 0, {P_A_WAVE, P_A_POS, P_A_WMODE, P_A_WARP}},
     {"OSC A", HB_BTN_EDIT, 0, K_OSCA, DS_WAVE_A, 0, {P_A_OCT, P_A_SEMI, P_A_FINE, P_A_LVL}},
     {"OSC A", HB_BTN_EDIT, 0, K_OSCA, DS_WAVE_A, 0, {P_A_UNI, P_A_DET, P_A_SPR, P_A_PAN}},
     {"OSC B", HB_BTN_EDIT, 1, K_OSCB, DS_WAVE_B, 0, {P_B_WAVE, P_B_POS, P_B_WMODE, P_B_WARP}},
     {"OSC B", HB_BTN_EDIT, 0, K_OSCB, DS_WAVE_B, 0, {P_B_OCT, P_B_SEMI, P_B_FINE, P_B_LVL}},
     {"OSC B", HB_BTN_EDIT, 0, K_OSCB, DS_WAVE_B, 0, {P_B_UNI, P_B_DET, P_B_SPR, P_B_PAN}},
-    {"FILTER", HB_BTN_SEL, 1, K_FILT, DS_FILT, 0, {P_F_TYPE, P_F_CUT, P_F_RES, P_F_ENV}},
-    {"FILTER", HB_BTN_SEL, 0, K_FILT, DS_FILT, 0, {P_F_KEY, P_F_DRV, P_F_VEL, P_F_VAR}},
-    {"MIX", HB_BTN_SEL, 1, K_MIX, DS_MIX, 0, {P_SUB_WAVE, P_SUB_OCT, P_SUB_LVL, P_SUB_DIR}},
-    {"MIX", HB_BTN_SEL, 0, K_MIX, DS_MIX, 0, {P_NZ_TYPE, P_NZ_LVL, P_VOL, P_VSPREAD}},
+    {"FILTER", HB_BTN_ENV, 1, K_FILT, DS_FILT, 0, {P_F_TYPE, P_F_CUT, P_F_RES, P_F_ENV}},
+    {"FILTER", HB_BTN_ENV, 0, K_FILT, DS_FILT, 0, {P_F_KEY, P_F_DRV, P_F_VEL, P_F_VAR}},
     {"ENV 1", HB_BTN_ENV, 1, K_ENV, DS_ENV, P_E1_A, {P_E1_A, P_E1_D, P_E1_S, P_E1_R}},
     {"ENV 2", HB_BTN_ENV, 1, K_ENV, DS_ENV, P_E2_A, {P_E2_A, P_E2_D, P_E2_S, P_E2_R}},
     {"ENV 3", HB_BTN_ENV, 1, K_ENV, DS_ENV, P_E3_A, {P_E3_A, P_E3_D, P_E3_S, P_E3_R}},
     {"LFO 1", HB_BTN_LFO, 1, K_LFO, DS_LFO, P_L1_SHAPE, {P_L1_SHAPE, P_L1_RATE, P_L1_SYNC, P_L1_FADE}},
     {"LFO 2", HB_BTN_LFO, 1, K_LFO, DS_LFO, P_L2_SHAPE, {P_L2_SHAPE, P_L2_RATE, P_L2_SYNC, P_L2_FADE}},
     {"LFO 3", HB_BTN_LFO, 1, K_LFO, DS_LFO, P_L3_SHAPE, {P_L3_SHAPE, P_L3_RATE, P_L3_SYNC, P_L3_FADE}},
-    {"MATRIX", HB_BTN_SEQ, 1, K_MOD, DS_MOD, 0, {P_X1_SRC, P_X1_DST, P_X1_AMT, PG_SLOT}},
+    {"MATRIX", HB_BTN_LFO, 1, K_MOD, DS_MOD, 0, {P_X1_SRC, P_X1_DST, P_X1_AMT, PG_SLOT}},
+    {"MIX", HB_BTN_GLO, 1, K_MIX, DS_MIX, 0, {P_SUB_WAVE, P_SUB_OCT, P_SUB_LVL, P_SUB_DIR}},
+    {"MIX", HB_BTN_GLO, 0, K_MIX, DS_MIX, 0, {P_NZ_TYPE, P_NZ_LVL, P_VOL, P_VSPREAD}},
+    {"VOICE", HB_BTN_GLO, 1, K_VOICE, DS_VOICE, 0, {P_MODE, P_GLIDE, P_BEND, P_VELSENS}},
     {"ARP", HB_BTN_ARP, 1, K_ARP, DS_ARP, 0, {P_ARP_MODE, P_ARP_RATE, P_ARP_GATE, P_ARP_OCT}},
     {"ARP", HB_BTN_ARP, 0, K_ARP, DS_ARP, 0, {P_ARP_SWING, P_ARP_LATCH, P_TEMPO, NOP}},
     {"FX RACK", HB_BTN_FX, 1, K_FX, DS_FX, 0, {P_FX1_TYPE, P_FX1_A, P_FX1_B, P_FX1_C}},
@@ -69,7 +79,8 @@ static const page_t PAGES[] = {
     {"FX RACK", HB_BTN_FX, 0, K_FX, DS_FX, 4, {P_FX5_TYPE, P_FX5_A, P_FX5_B, P_FX5_C}},
     {"FX RACK", HB_BTN_FX, 0, K_FX, DS_FX, 5, {P_FX6_TYPE, P_FX6_A, P_FX6_B, P_FX6_C}},
     {"FX RACK", HB_BTN_FX, 0, K_FX, DS_FX, 6, {P_FX7_TYPE, P_FX7_A, P_FX7_B, P_FX7_C}},
-    {"VOICE", HB_BTN_GLO, 1, K_VOICE, DS_VOICE, 0, {P_MODE, P_GLIDE, P_BEND, P_VELSENS}},
+    {"SEQUENCER", HB_BTN_SEQ, 1, K_ARP, DS_SEQ, 0, {PG_PAT, PG_LEN, PG_QUANT, PG_CLICK}},
+    {"STEPS", HB_BTN_SEQ, 1, K_ARP, DS_SEQ, 1, {PG_STEP, PG_SNOTE, PG_SVEL, PG_SLEN}},
 };
 #define NPAGES (sizeof PAGES / sizeof PAGES[0])
 
@@ -86,21 +97,28 @@ static struct {
     uint8_t d_top;                              /* the top line (the octave) */
     uint8_t last[16];                           /* by button: the page of its section seen last */
     uint8_t lvl_drawn, lvl_shown;
+    uint8_t step;                               /* STEPS: the step the knobs and the keys edit */
+    uint8_t sq_cell, sq_state;                  /* the step lit as the playhead, the state shown (the screen) */
+    uint32_t sq_ver;
     uint32_t act_drawn, t_meter;
 } ui_s;
 static volatile uint8_t ui_ext_dirty;           /* a parameter changed from MIDI */
 static volatile int32_t ui_pc_req = -1;         /* a program change to do in the main loop */
 
-/* the dice (ap_rand.h): the last eight sounds, to go back through. how[i]: 0 the sound as it was before the dice,
- * a kind (RK_BASS ..) for one thrown, RD_MUT for one moved a little */
+/* the dice (ap_rand.h). SEL throws a sound, NEW or a VARIATION of this one, over the one thrown before it: nothing is
+ * kept until SEL is held. KEPT goes back through the sounds kept (eight, the oldest goes) and the one before the
+ * dice. how[i]: the kind of a sound kept (RK_BASS ..), or RD_MUT */
 #define RH 8u
 #define RD_MUT 0x80u
-static patch_t rh[RH];
+static patch_t rh[RH], rbefore;
 static struct {
-    uint8_t n, pos, kind, chaos;
+    uint8_t n, pos;                             /* the sounds kept; pos 0 the one before the dice, i the i-th kept */
+    uint8_t kind, chaos, what;                  /* what SEL throws: its kind, how wild, 1: a variation */
+    uint8_t trying, tkind;                      /* the sound is a throw not kept (of this kind) */
+    uint8_t before;                             /* rbefore holds the sound before the dice */
     uint8_t how[RH];
     uint32_t count;
-} rd = {0, 0, RK_ANY, 48, {0}, 0};
+} rd = {0, 0, RK_ANY, 48, 0, 0, 0, 0, {0}, 0};
 
 /* ---- text */
 static char *put_s(char *d, const char *s)
@@ -350,6 +368,7 @@ static void t_right(int32_t xr, int32_t y, uint32_t f, const char *s, uint16_t f
 /* ---- the top line: the name, the keys' octave, the level going out (draw_meter) */
 static int8_t kb_oct;                           /* the keys' octave (OCT - / OCT +), -3 .. +3 */
 static uint8_t oct_led = 0xFFu;                 /* OCT - and OCT +'s lights as sent (bits 0, 1); 0xFF: send again */
+static uint8_t tr_led = 0xFFu;                  /* PLAY and REC's, the same way */
 static void draw_top(void)
 {
     char s[8] = "OCT 0";
@@ -412,6 +431,107 @@ static void card_bar(uint32_t on, uint16_t c, int32_t x, int32_t w)
     if (w > 0)
         dr_rect(7 + x, 51, w, 4, on ? U_INK : c);
 }
+static char *note_name(char *d, uint32_t key)   /* C4 is 60 */
+{
+    static const char NN[12][3] = {"C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"};
+    d = put_s(d, NN[key % 12u]);
+    return put_i(d, (int32_t)(key / 12u) - 1, 0);
+}
+/* a step of the pattern on the STEPS page: its notes, low first; the first one's word */
+static uint32_t step_first(uint32_t s, uint32_t *e)
+{
+    const pat_t *p = &pats[pl.pat];
+    uint32_t k, best = 0, lo = 128u;
+    for (k = 0; k < p->n; k++)
+        if (EV_POS(p->ev[k]) / SQ_SUB == s && EV_KEY(p->ev[k]) < lo) {
+            lo = EV_KEY(p->ev[k]);
+            best = p->ev[k];
+        }
+    *e = best;
+    return lo < 128u;
+}
+/* RANDOM's and the sequencer's cards: their name; s gets the value, the bar is drawn */
+static const char *card_own(uint32_t what, char *s, uint32_t on, uint16_t c)
+{
+    static const char *const CLK[3] = {"OFF", "REC", "ON"};
+    const pat_t *p = &pats[pl.pat];
+    uint32_t i, e;
+    char *q;
+    switch (what) {
+    case PG_SLOTS:                              /* the one before the dice, then the sounds kept */
+        if (rd.trying)
+            put_s(s, "NEW");
+        else if (!rd.pos)
+            put_s(s, rd.before ? "BEFORE" : "-");
+        else {
+            q = put_i(s, rd.pos, 0);
+            *q++ = '/';
+            put_i(q, rd.n, 0);
+        }
+        for (i = 0; i <= RH; i++)
+            dr_rect(7 + (int32_t)i * 5, 51, 4, 4, i > rd.n || (!i && !rd.before) ? U_TRACK
+                                                   : i == rd.pos && !rd.trying ? (on ? U_INK : c) : U_DIM);
+        return "KEPT";
+    case PG_KIND:
+        put_s(s, RK_NAME[rd.kind]);
+        card_bar(on, c, (40 * (int32_t)rd.kind) / (int32_t)(NRK - 1u), 6);
+        return "KIND";
+    case PG_CHAOS:
+        put_i(s, rd.chaos, 0);
+        card_bar(on, c, 0, ((int32_t)rd.chaos * 46) / 127);
+        return "CHAOS";
+    case PG_WHAT:
+        put_s(s, rd.what ? "VARY" : "NEW");
+        card_bar(on, c, rd.what ? 40 : 0, 6);
+        return "SEL";
+    case PG_PAT:
+        s[0] = (char)('A' + pl.pat);
+        s[1] = 0;
+        if (pl.next != pl.pat) {                /* the one asked for, when this one comes round */
+            s[1] = '>';
+            s[2] = (char)('A' + pl.next);
+            s[3] = 0;
+        }
+        for (i = 0; i < SQ_PAT; i++)
+            dr_rect(7 + (int32_t)i * 12, 51, 10, 4, i == pl.pat ? (on ? U_INK : c) : pats[i].n ? U_DIM : U_TRACK);
+        return "PATTERN";
+    case PG_LEN:
+        put_i(s, p->len, 0);
+        card_bar(on, c, 0, ((int32_t)p->len * 46) / 64);
+        return "STEPS";
+    case PG_QUANT:
+        put_s(s, p->quant ? "ON" : "OFF");
+        card_bar(on, c, p->quant ? 40 : 0, 6);
+        return "QUANTIZE";
+    case PG_CLICK:
+        put_s(s, CLK[pb.click < 3u ? pb.click : 0u]);
+        card_bar(on, c, 20 * (int32_t)pb.click, 6);
+        return "CLICK";
+    case PG_STEP:
+        put_i(s, ui_s.step + 1, 0);
+        card_bar(on, c, ((int32_t)ui_s.step * 40) / (p->len > 1u ? p->len - 1 : 1), 6);
+        return "STEP";
+    default:                                    /* the step's notes: the first one tells */
+        if (!step_first(ui_s.step, &e)) {
+            put_s(s, "-");
+            return what == PG_SNOTE ? "NOTE" : what == PG_SVEL ? "VELO" : "LENGTH";
+        }
+        if (what == PG_SNOTE) {
+            note_name(s, EV_KEY(e));
+            card_bar(on, c, 0, ((int32_t)EV_KEY(e) * 46) / 127);
+            return "NOTE";
+        }
+        if (what == PG_SVEL) {
+            put_i(s, (int32_t)EV_VEL(e), 0);
+            card_bar(on, c, 0, ((int32_t)EV_VEL(e) * 46) / 127);
+            return "VELO";
+        }
+        i = (len_sub(e & 127u) + SQ_SUB / 2u) / SQ_SUB;
+        put_i(s, (int32_t)(i ? i : 1u), 0);
+        card_bar(on, c, 0, ((int32_t)(i > 16u ? 16u : i) * 46) / 16);
+        return "LENGTH";
+    }
+}
 static void draw_tile(uint32_t k)
 {
     const page_t *pg = &PAGES[ui_s.page];
@@ -420,7 +540,7 @@ static void draw_tile(uint32_t k)
     char s[16];
     const char *nm = 0;
     dv_begin(60, 0, 64, U_BG);
-    if (pg->par[k] == NOP || (pg->par[k] < PG_MUT && fx_knob(id, &fxt) >= 0 && !fxt)) {   /* nothing, or a knob */
+    if (pg->par[k] == NOP || (pg->par[k] < PG_X && fx_knob(id, &fxt) >= 0 && !fxt)) {   /* nothing, or a knob */
         dr_rect(1, 0, 58, 64, U_VOID);                                                    /* of an empty slot */
         H->cv_blit((int32_t)k * 60, Y_DECK);
         return;
@@ -436,30 +556,8 @@ static void draw_tile(uint32_t k)
         for (i = 0; i < 8u; i++)
             dr_rect(7 + (int32_t)i * 6, 51, 4, 4, i == ui_s.slot ? (on ? U_INK : c)
                                                    : cur.p[P_X1_SRC + 3u * i] && cur.p[P_X1_DST + 3u * i] ? U_DIM : U_TRACK);
-    } else if (pg->par[k] >= PG_MUT) {          /* the dice */
-        uint32_t i;
-        if (pg->par[k] == PG_ROLL) {
-            char *p = put_i(s, rd.n ? rd.pos + 1 : 0, 0);
-            *p++ = '/';
-            put_i(p, rd.n, 0);
-            if (!rd.n)
-                put_s(s, "TURN");
-            nm = "ROLL";
-            for (i = 0; i < RH; i++)            /* the sounds to go back through, and which one this is */
-                dr_rect(7 + (int32_t)i * 6, 51, 4, 4, i >= rd.n ? U_TRACK : i == rd.pos ? (on ? U_INK : c) : U_DIM);
-        } else if (pg->par[k] == PG_KIND) {
-            nm = "KIND";
-            put_s(s, RK_NAME[rd.kind]);
-            card_bar(on, c, (40 * (int32_t)rd.kind) / (int32_t)(NRK - 1u), 6);
-        } else if (pg->par[k] == PG_CHAOS) {
-            nm = "CHAOS";
-            put_i(s, rd.chaos, 0);
-            card_bar(on, c, 0, ((int32_t)rd.chaos * 46) / 127);
-        } else {
-            nm = "MUTATE";
-            put_s(s, "VARY");
-            card_bar(on, c, 20, 6);
-        }
+    } else if (pg->par[k] >= PG_X) {            /* the page's own */
+        nm = card_own(pg->par[k], s, on, c);
     } else {
         const pdef_t *d = &PDEF[id];
         int32_t v = cur.p[id], w;
@@ -863,21 +961,128 @@ static void disp_voice(uint16_t c)
         dr_rect(64, 92, (load * 168) / 100, 8, load > 70 ? U_WARN : c);
 }
 
-/* RANDOM: the sound's name, the eight sounds to go back through, what this one is */
+/* RANDOM: the sound's name; the sounds kept; what SEL does */
 static void disp_rand(uint16_t c)
 {
-    uint32_t i, how = rd.n ? rd.how[rd.pos] : 0;
+    uint32_t i;
     t_fit(8, 24, F_XL, cur.name, 224, U_TXT, U_BG);
-    if (!rd.n) {
-        t_draw(8, 62, F_M, "ROLL: A NEW SOUND", U_DIM, U_BG);
-        t_draw(8, 80, F_M, "MUTATE: THIS ONE, MOVED", U_DIM, U_BG);
+    for (i = 0; i <= RH; i++)                   /* the one before the dice, then the sounds kept */
+        dr_rect(8 + (int32_t)i * 15, 56, 11, 11, i > rd.n || (!i && !rd.before) ? U_PANEL
+                                                 : i == rd.pos && !rd.trying ? c : U_DIM);
+    t_draw(148, 57, F_M, rd.trying ? "NOT KEPT" : rd.pos ? "KEPT" : rd.before ? "BEFORE" : "", rd.trying ? U_WARN : U_TXT, U_BG);
+    t_draw(8, 84, F_M, rd.what ? "SEL: A VARIATION OF THIS" : "SEL: A NEW SOUND", U_DIM, U_BG);
+    t_draw(8, 102, F_M, "HOLD SEL: KEEP IT", U_DIM, U_BG);
+}
+
+/* ---- the sequencer: its 64 steps as four rows of sixteen. A step with notes on its colour, a mark for each of
+ * them as high as it is; the playhead white; the step STEPS edits framed. Drawn straight to the screen too, a
+ * step at a time, as the playhead goes (seq_cells) */
+#define SQ_X 8
+#define SQ_Y 44
+static int32_t seq_rowh(void)                   /* a row's height: the fewer the rows, the taller (a piano roll) */
+{
+    static const uint8_t RH_[4] = {60, 32, 21, 15};
+    return RH_[(pats[pl.pat].len - 1u) >> 4 & 3u];
+}
+static void seq_cell(uint32_t i, int32_t yoff, uint32_t steps_page, uint16_t c, int32_t lo, int32_t span)
+{
+    const pat_t *p = &pats[pl.pat];
+    int32_t rh = seq_rowh(), x = SQ_X + (int32_t)(i & 15u) * 14, y = SQ_Y + (int32_t)(i >> 4) * (rh + 3) + yoff;
+    uint32_t k, has = 0, head = pl.run && pl.rec != 1u && pl.sp / SQ_SUB == i;
+    uint16_t bg;
+    for (k = 0; k < p->n; k++)
+        if (EV_POS(p->ev[k]) / SQ_SUB == i)
+            has = 1;
+    bg = i >= p->len ? U_BG : head ? U_TXT : has ? c : (i & 3u) ? U_PANEL : U_TRACK;
+    if (i >= p->len)
         return;
+    H->fill(x, y, 13, rh, bg);
+    if (has)
+        for (k = 0; k < p->n; k++)
+            if (EV_POS(p->ev[k]) / SQ_SUB == i)
+                H->fill(x + 2, y + rh - 4 - ((int32_t)EV_KEY(p->ev[k]) - lo) * (rh - 6) / span, 9, 2, U_INK);
+    if (steps_page && i == ui_s.step) {         /* the step edited: framed */
+        H->fill(x - 1, y - 1, 15, 1, U_TXT);
+        H->fill(x - 1, y + rh, 15, 1, U_TXT);
+        H->fill(x - 1, y, 1, rh, U_TXT);
+        H->fill(x + 13, y, 1, rh, U_TXT);
     }
-    for (i = 0; i < RH; i++)
-        dr_rect(8 + (int32_t)i * 15, 58, 11, 11, i >= rd.n ? U_PANEL : i == rd.pos ? c : U_DIM);
-    t_draw(136, 59, F_M, !how ? "AS IT WAS" : how == RD_MUT ? "VARIATION" : RK_NAME[how < NRK ? how : 0], U_TXT, U_BG);
-    t_draw(8, 84, F_M, "LEFT: BACK", U_DIM, U_BG);
-    t_draw(8, 102, F_M, "SAVE: KEEP IT", U_DIM, U_BG);
+}
+static void seq_range(int32_t *lo, int32_t *span)   /* the lowest note of the pattern, and how far they go */
+{
+    const pat_t *p = &pats[pl.pat];
+    uint32_t k;
+    int32_t l = 127, h = 0;
+    for (k = 0; k < p->n; k++) {
+        int32_t key = (int32_t)EV_KEY(p->ev[k]);
+        if (key < l) l = key;
+        if (key > h) h = key;
+    }
+    *lo = l > h ? 60 : l;
+    *span = h - *lo < 12 ? 12 : h - *lo;
+}
+static uint32_t seq_state(void)                 /* what the title says, as a number (it changes: draw again) */
+{
+    return pl.rec == 1u ? 16u + pl.count / (4u * SQ_SUB) : (uint32_t)pl.run << 1 | (pl.rec == 2u) | (uint32_t)pl.pat << 2;
+}
+static void disp_seq(uint32_t steps_page, uint16_t c)
+{
+    const pat_t *p = &pats[pl.pat];
+    char t[40], *q;
+    uint32_t i;
+    if (steps_page) {                           /* the step: its notes */
+        uint32_t keys[8], n;
+        q = put_s(t, "STEP ");
+        q = put_i(q, ui_s.step + 1, 0);
+        t_draw(8, 24, F_L, t, U_TXT, U_BG);
+        n = step_notes(p, ui_s.step, keys, 4u);
+        q = t;
+        for (i = 0; i < n; i++) {
+            q = note_name(q, keys[i]);
+            *q++ = ' ';
+        }
+        *q = 0;
+        t_right(232, 27, F_M, n ? t : "EMPTY", n ? c : U_FAINT, U_BG);
+    } else {
+        q = put_s(t, "PATTERN ");
+        *q++ = (char)('A' + pl.pat);
+        *q = 0;
+        t_draw(8, 24, F_L, t, U_TXT, U_BG);
+        if (pl.rec == 1u) {
+            q = put_s(t, "COUNT ");
+            put_i(q, (int32_t)((pl.count + 4u * SQ_SUB - 1u) / (4u * SQ_SUB)), 0);
+        } else {
+            q = put_i(t, p->n, 0);
+            put_s(q, p->n == 1u ? " NOTE" : " NOTES");
+        }
+        t_right(232, 27, F_M, t, pl.rec ? U_WARN : U_DIM, U_BG);
+    }
+    for (i = 0; i < p->len; i++)                /* (the cells, in the strip: then straight on the screen) */
+        dr_rect(SQ_X + (int32_t)(i & 15u) * 14, SQ_Y + (int32_t)(i >> 4) * (seq_rowh() + 3), 13, seq_rowh(), U_PANEL);
+    t_draw(8, 118, F_S, pl.rec == 2u ? "RECORDING" : pl.run ? "PLAYING" : "STOPPED", pl.rec ? U_WARN : U_DIM, U_BG);
+    if (steps_page)
+        t_right(232, 118, F_S, pl.run ? "KEYS: PLAY" : "KEYS: WRITE   SEL: CLEAR", U_FAINT, U_BG);
+    else
+        t_right(232, 118, F_S, "SEL: UNDO   HOLD REC: CLEAR", U_FAINT, U_BG);
+}
+static void seq_cells(uint32_t all)             /* straight to the screen: every cell, or the playhead's two */
+{
+    const page_t *pg = &PAGES[ui_s.page];
+    uint32_t now = pl.run && pl.rec != 1u ? pl.sp / SQ_SUB : 255u, i;
+    int32_t lo, span;
+    if (pg->disp != DS_SEQ || ui_s.save)
+        return;
+    seq_range(&lo, &span);
+    if (all) {
+        for (i = 0; i < 64u; i++)
+            seq_cell(i, Y_DISP, pg->arg, COL[pg->col], lo, span);
+    } else if (now != ui_s.sq_cell) {
+        if (ui_s.sq_cell < 64u)
+            seq_cell(ui_s.sq_cell, Y_DISP, pg->arg, COL[pg->col], lo, span);
+        if (now < 64u)
+            seq_cell(now, Y_DISP, pg->arg, COL[pg->col], lo, span);
+    }
+    ui_s.sq_cell = (uint8_t)now;
 }
 
 static void draw_meter(uint32_t force);
@@ -902,11 +1107,17 @@ static void draw_disp(uint32_t strip)
     case DS_ARP: disp_arp(c); break;
     case DS_FX: disp_fx(pg->arg, c); break;
     case DS_RAND: disp_rand(c); break;
+    case DS_SEQ: disp_seq(pg->arg, c); break;
     default: disp_voice(c); break;
     }
     H->cv_blit(0, Y_DISP + y0);
     if (!strip && pg->disp == DS_PLAY)
         ui_s.act_drawn = 0xFFFFFFFFu;           /* (the notes, again) */
+    if (pg->disp == DS_SEQ) {                   /* (the steps, on it) */
+        seq_cells(1);
+        ui_s.sq_ver = pat_ver;
+        ui_s.sq_state = (uint8_t)seq_state();
+    }
 }
 
 /* straight to the screen when they change: the level going out (the header), the notes sounding (PLAY) */
@@ -930,6 +1141,12 @@ static void draw_meter(uint32_t force)
         ui_s.lvl_drawn = (uint8_t)lv;
     }
     ui_s.lvl_shown = (uint8_t)lv;
+    if (PAGES[ui_s.page].disp == DS_SEQ && !ui_s.save) {   /* the sequencer: the playhead, what changed */
+        if (pat_ver != ui_s.sq_ver || seq_state() != ui_s.sq_state)
+            ui_s.d_disp = 1;
+        else
+            seq_cells(0);
+    }
     if (PAGES[ui_s.page].disp != DS_PLAY || ui_s.save)
         return;
     if (!force && act == ui_s.act_drawn)
@@ -949,14 +1166,15 @@ static void ui_dirty_all(void)
 
 static void ui_leds(void)
 {
-    static const uint8_t BT[] = {HB_BTN_PLAY, HB_BTN_EDIT, HB_BTN_SEL, HB_BTN_ENV, HB_BTN_LFO, HB_BTN_SEQ, HB_BTN_ARP,
-                                 HB_BTN_FX, HB_BTN_GLO};
-    uint32_t i;
+    static const uint8_t BT[] = {HB_BTN_HOME, HB_BTN_EDIT, HB_BTN_ENV, HB_BTN_LFO, HB_BTN_SEQ, HB_BTN_ARP, HB_BTN_FX,
+                                 HB_BTN_GLO};
+    uint32_t i, d = PAGES[ui_s.page].disp;
     for (i = 0; i < sizeof BT; i++)
         H->led(BT[i], PAGES[ui_s.page].btn == BT[i]);
+    H->led(HB_BTN_SEL, d == DS_RAND || d == DS_SEQ || d == DS_MOD);   /* SEL does something here */
     H->led(HB_BTN_SAVE, ui_s.save);
-    H->led(HB_BTN_REC, ui_s.compare);
     oct_led = 0xFFu;
+    tr_led = 0xFFu;
 }
 
 static void ui_go(uint32_t page)

@@ -18,7 +18,7 @@ modulation matrix. So the velocity of a key, and the pressure on it, shape that 
 The screen is flat blocks of colour, one colour per section, lettered in Inter Tight drawn smooth on the FM-1
 itself. At the top the keys' octave and the level going out; then the parts of the section as tabs, the pages of
 this part as dots; the sound's number and name, the page's title and a picture of what it edits; and four cards,
-one under each knob, the one last turned on the section's colour. [All 29 pages](docs/pages.png).
+one under each knob, the one last turned on the section's colour. [All 31 pages](docs/pages.png).
 
 > **Status: 0.2, not yet played on a real FM-1.** It was written and tested on a computer: the module's own code,
 > unchanged, on a stand-in for fm1-dock's host ([Tests](#tests)), and in the editor, where you can play it now.
@@ -55,12 +55,19 @@ one under each knob, the one last turned on the section's colour. [All 29 pages]
 - **An arpeggiator**: up, down, up-down, random, as played, chord; 1 to 4 octaves, gate, swing, latch. It follows
   TEMPO, or MIDI clock when one comes in (the echo, PUMP and synced LFOs too).
 - **POLY, MONO, LEGATO**, glide, the sustain pedal.
-- **41 factory sounds and 32 of your own**; REC compares the edited sound with the stored one.
-- **Dice** (the RANDOM page): ROLL throws a new sound, not noise: a recipe for each KIND (bass, lead, pad, pluck, keys,
-  bell, weird, or any) says which tables suit it, how its envelopes go, what moves what and which effects follow, and
-  the dice choose inside it. CHAOS widens the recipe (odd tables and filters, warps, more modulation). MUTATE moves
-  the sound there is a little. Every throw gets a name, its four macros and the wheel are always wired, and a turn
-  to the left goes back: the last eight sounds are kept, the one before the dice among them. SAVE keeps one.
+- **41 factory sounds and 32 of your own**; while SAVE asks where, REC compares the edited sound with the stored one.
+- **A sequencer you play into** (after SLOOP and ChoralRoot): PLAY starts and stops it; REC counts a bar in (a click
+  on the beats) and records what you play, a pass over the one before; QUANTIZE puts the notes on the sixteenths or
+  leaves them where they were played. Four patterns (A to D, the next one waits for the end of the bar), up to 64
+  steps and 192 notes each, chords and ties too, swing from the ARP page, MIDI clock and START / STOP. The STEPS page
+  writes a step at a time from the keys. SEL undoes the last pass (again: redoes it), REC held clears the pattern.
+  The patterns are kept in the flash when it stops.
+- **Dice** (HOME twice: the RANDOM page): SEL throws a sound, not noise: a recipe for each KIND (bass, lead, pad,
+  pluck, keys, bell, weird, or any) says which tables suit it, how its envelopes go, what moves what and which
+  effects follow, and the dice choose inside it. CHAOS widens the recipe (odd tables and filters, warps, more
+  modulation, more effects anywhere in the rack); the CHAOS kind throws every parameter at random. SEL THROWS: NEW,
+  or VARY (this sound, moved a little). Each throw goes over the one before: nothing is kept until SEL is held. KEPT
+  goes back through the eight sounds kept and the one before the dice. SAVE keeps one for good.
 - **Every parameter is an NRPN**, in and out: that is how the editor talks to it, over USB, the DIN jack or
   Bluetooth.
 
@@ -80,8 +87,8 @@ browser will not give MIDI to a page opened from a file, serve it: `python3 -m h
   input. The screen on the left is the FM-1's, drawn by the same code, with its buttons and knobs under it.
 - **Edit it**: every parameter by section, named and shown as the FM-1 names and shows it. Drag a bar (Shift: finer),
   double-click for its usual value, the wheel or the arrow keys for one step. Undo and redo, 100 steps.
-- **Throw the dice**: *Random* (of the kind and with the chaos chosen beside it) and *Mutate*, as the FM-1's RANDOM
-  page does; Undo brings back what was there.
+- **Throw the dice**: the RANDOM card, first in the page: *Roll* (of the kind and with the chaos chosen beside it),
+  *Mutate*, *Keep*, as the FM-1's RANDOM page does; Undo brings back what was there.
 - **Keep it**: Save and Open (a small JSON file, by parameter name), Link (the sound in a web address), and the
   page remembers the sound it had.
 - **With an FM-1**: Connect, then *Get sound*, *Send sound* (it is read back and compared), *Store there* (as one of
@@ -114,23 +121,23 @@ editor, sees a Bluetooth FM-1 once the system has connected it.
 
 | | |
 | --- | --- |
-| **EDIT**, **SEL**, **ENV**, ... | a section: the first tap where you left it, each tap after it the next page (the header shows the parts as tabs, the pages as dots) |
-| **PLAY** | PLAY: the sound's name and four macros (each named after what it moves); again: RANDOM, the dice (ROLL, KIND, CHAOS, MUTATE) |
+| **EDIT**, **ENV**, ... | a section: the first tap where you left it, each tap after it the next page (the header shows the parts as tabs, the pages as dots) |
+| **HOME** | PLAY: the sound's name and four macros (each named after what it moves). Twice quickly: RANDOM, the dice. Held 1.5 s: fm1-dock's list of synths |
 | **EDIT** | OSC A (three pages), then OSC B |
-| **SEL** | FILTER (SHAPE is on its second page), then MIX |
-| **ENV** / **LFO** | ENV 1 (the amp), 2, 3 / LFO 1, 2, 3 |
-| **SEQ** | MATRIX: knob 4 picks the slot |
-| **ARP** | the arpeggiator and TEMPO |
+| **ENV** | FILTER (SHAPE is on its second page), then ENV 1 (the amp), 2, 3 |
+| **LFO** | LFO 1, 2, 3, then the MATRIX (knob 4 or SEL: the slot) |
+| **GLO** | MIX, then VOICE: POLY / MONO / LEGATO, glide, bend range, velocity; the notes allowed and the measured load |
+| **ARP** | the arpeggiator, its swing and TEMPO |
 | **FX** | FX RACK: each tap the next of the seven slots. Knob 1 picks the effect |
-| **GLO** | VOICE: POLY / MONO / LEGATO, glide, bend range, velocity; the notes allowed and the measured load |
-| **HOME** | the PLAY page (held 1.5 s: fm1-dock's list of synths) |
+| **SEQ** | SEQUENCER (pattern, steps, quantize, click), then STEPS (a step, its notes, velocity, length) |
+| **PLAY** / **REC** | the sequencer: start, stop / record (stopped: after a bar counted in). REC held: the pattern cleared |
+| **SEL** | what the page does (lit when it does something): RANDOM, a throw (held: keep it); SEQUENCER, undo; STEPS, clear the step; MATRIX, the next slot |
 | **OCT -** / **OCT +** | the keys' octave, three each way; both at once: the middle. The button lights for one octave, blinks for two, blinks fast for three |
-| **REC** | the stored sound and the edited one, by turns |
-| **SAVE** | pick a user sound with PRESETS, SAVE again (any other button: no) |
+| **SAVE** | pick a user sound with PRESETS, SAVE again (REC: hear the stored one; any other button: no) |
 | **SELECT** | the tempo, from any page (when MIDI clock leads, it says so) |
 | **PRESETS** | the sounds: F01..F41, then U01..U32 |
 | **ALGORITHM** | the wavetable of oscillator A (of B on its pages): 64, then USER 1 to 3 |
-| **KNOB 1..4** | the four cards of the page |
+| **KNOB 1..4** | the four cards of the page. Turned fast, they go further (up to eight steps a click; a list a step a click) |
 
 The keys play in Fizzy-Fm's octave and go out over USB and Bluetooth as they did with fm1-dock (channel 1).
 
@@ -194,7 +201,8 @@ harmonics (-48 dB or better), every factory sound (it sounds, it never clips, it
 20 filter types and each of the 14 effects (alone with its knobs at both ends, then seven at once), the editor's
 link (everything asked for arrives with the right sum, a table of one's own arrives whole, is kept and plays), the
 trade of unison for notes, the guard that lets notes go on a slow chip, legato and glide, the arpeggiator's rate
-from TEMPO and from MIDI clock, every page of the screen, saving and comparing, the dice (thousands of throws: every
+from TEMPO and from MIDI clock, every page of the screen, saving and comparing, the sequencer (a bar recorded from the keys and played back in time and in tune, undo, steps written from the keys,
+the patterns written to the flash), the knobs' speed, the dice (thousands of throws: every
 parameter in its range, the same seed the same sound; a few of each kind played: none silent, none over the limiter,
 their levels within a few dB of one another; the way back on the panel), and two minutes of random knobs, buttons,
 MIDI and notes on random sounds.
@@ -208,8 +216,8 @@ eight plain notes, 30 to 43 % for the factory pads with eight keys held, 50 % fo
 make with seven effects, counted at the rate fm1-emu uses (an instruction per cycle of 240 MHz). The FM-1's chip is
 another instruction set and reads its code through a flash cache. The number that counts is the LOAD line on the
 VOICE page of a real unit; `COST_BUDGET` in [fizzyfm/ap_eng.h](fizzyfm/ap_eng.h) is the one place to change if it is
-off. As compiled for the stand-in, Fizzy-Fm uses 264 of the 272 KiB of RAM a module has, and its code and tables take
-about 245 KiB of flash: fm1-dock's build says the real figures, and refuses what does not fit.
+off. As compiled for the stand-in, Fizzy-Fm uses 268 of the 272 KiB of RAM a module has, and its code and tables take
+about 263 KiB of flash: fm1-dock's build says the real figures, and refuses what does not fit.
 
 ## Before you release
 

@@ -154,12 +154,11 @@ EXPORT(w_random) uint32_t w_random(uint32_t kind, uint32_t chaos, uint32_t mutat
 {
     rd.kind = (uint8_t)(kind < NRK ? kind : RK_ANY);
     rd.chaos = (uint8_t)(chaos > 127u ? 127u : chaos);
-    if (rd.n)
-        rd.pos = (uint8_t)(rd.n - 1u);          /* (always a new one: the page has its own undo) */
-    rand_turn(mutate, 1);
-    return rd.how[rd.pos];
+    rd.what = (uint8_t)(mutate != 0);
+    rand_throw();
+    return rd.tkind;
 }
-/* the tables of one's own: NUWT of 8 frames x 64 harmonics x (sine part, cosine part), 16 bits */
+EXPORT(w_keep) void w_keep(void) { rand_keep(); }/* the tables of one's own: NUWT of 8 frames x 64 harmonics x (sine part, cosine part), 16 bits */
 EXPORT(w_uwt) int16_t *w_uwt(void) { return uwt[0]; }
 EXPORT(w_uwt_changed) void w_uwt_changed(uint32_t slot)
 {

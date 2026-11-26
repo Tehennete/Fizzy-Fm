@@ -9,8 +9,8 @@
 #ifndef AP_RAND_H
 #define AP_RAND_H
 
-enum { RK_ANY, RK_BASS, RK_LEAD, RK_PAD, RK_PLUCK, RK_KEYS, RK_BELL, RK_WEIRD, NRK };
-static const char *const RK_NAME[NRK] = {"ANY", "BASS", "LEAD", "PAD", "PLUCK", "KEYS", "BELL", "WEIRD"};
+enum { RK_ANY, RK_BASS, RK_LEAD, RK_PAD, RK_PLUCK, RK_KEYS, RK_BELL, RK_WEIRD, RK_CHAOS, NRK };
+static const char *const RK_NAME[NRK] = {"ANY", "BASS", "LEAD", "PAD", "PLUCK", "KEYS", "BELL", "WEIRD", "CHAOS"};
 
 /* the tables a kind picks from */
 static const uint8_t RW_BASS[] = {T_SAW, T_SQUARE, T_PWM, T_BASIC, T_FM_1_1, T_FM_1_2, T_FM_FB, T_GROWL, T_RESO, T_PD,
@@ -33,7 +33,7 @@ static const struct {
     uint8_t n;
 } RW[NRK] = {{RW_PAD, sizeof RW_PAD}, {RW_BASS, sizeof RW_BASS}, {RW_LEAD, sizeof RW_LEAD}, {RW_PAD, sizeof RW_PAD},
              {RW_PLUCK, sizeof RW_PLUCK}, {RW_KEYS, sizeof RW_KEYS}, {RW_BELL, sizeof RW_BELL},
-             {RW_WEIRD, sizeof RW_WEIRD}};
+             {RW_WEIRD, sizeof RW_WEIRD}, {RW_WEIRD, sizeof RW_WEIRD}};
 
 /* a name: a word of the first list, then one of the kind's (five letters each at most: eleven with the space) */
 static const char *const RN_A[32] = {"NEON", "DUSK", "MOSS", "FIZZY", "SODA", "LUNAR", "AMBER", "IVORY", "RUSTY",
@@ -48,11 +48,12 @@ static const char *const RN_B[NRK][8] = {
     {"PLUCK", "PICK", "DROP", "SPARK", "PING", "HARP", "BEAD", "DOT"},
     {"KEYS", "TINE", "ORGAN", "PIANO", "REED", "CLAV", "EP", "PIPE"},
     {"BELL", "CHIME", "GLASS", "GONG", "STAR", "ICE", "TING", "DEW"},
-    {"BUG", "ALIEN", "NOISE", "GHOST", "CHAOS", "ROBOT", "ZAP", "VOID"}};
+    {"BUG", "ALIEN", "NOISE", "GHOST", "CHAOS", "ROBOT", "ZAP", "VOID"},
+    {"MESS", "STORM", "RIOT", "WRECK", "BLAST", "CRASH", "SPILL", "KNOT"}};
 
 /* a kind's level (VOLUME), and what a sound of it that only plucks gets on top (Q7) */
-static const uint8_t RK_VOL[NRK] = {90, 84, 89, 107, 95, 88, 72, 98};
-static const uint8_t RK_SHORT[NRK] = {170, 238, 170, 170, 170, 122, 170, 212};
+static const uint8_t RK_VOL[NRK] = {90, 84, 89, 107, 95, 88, 72, 98, 80};
+static const uint8_t RK_SHORT[NRK] = {170, 238, 170, 170, 170, 122, 170, 212, 170};
 
 /* ---- the dice (xorshift32). (R_FN: these are called a few hundred times below; inlined, they are 25 KiB) */
 #define R_FN static __attribute__((noinline))
@@ -109,6 +110,26 @@ R_FN void r_fx_any(patch_t *q, uint32_t type)
     }
     r_fx(q, type, v[0], v[1], v[2]);
 }
+/* an effect, any, at any place in the rack (the ones after it go one along), its knobs anywhere: CHAOS's */
+R_FN void r_fx_wild(patch_t *q)
+{
+    uint32_t at, i, t = 1u + r_n(NFXT - 1u);
+    if (r_nfx >= NFX)
+        return;
+    at = r_n(r_nfx + 1u);
+    for (i = r_nfx; i > at; i--) {
+        q->p[P_FX1_TYPE + 4u * i] = q->p[P_FX1_TYPE + 4u * (i - 1u)];
+        q->p[P_FX1_A + 4u * i] = q->p[P_FX1_A + 4u * (i - 1u)];
+        q->p[P_FX1_B + 4u * i] = q->p[P_FX1_B + 4u * (i - 1u)];
+        q->p[P_FX1_C + 4u * i] = q->p[P_FX1_C + 4u * (i - 1u)];
+    }
+    q->p[P_FX1_TYPE + 4u * at] = (uint8_t)t;
+    q->p[P_FX1_A + 4u * at] = r_in(8, 120);
+    q->p[P_FX1_B + 4u * at] = r_in(8, 116);
+    q->p[P_FX1_C + 4u * at] = r_in(20, 110);
+    r_nfx++;
+}
+
 R_FN void r_env(patch_t *q, uint32_t e, int32_t a0, int32_t a1, int32_t d0, int32_t d1, int32_t s0, int32_t s1,
                   int32_t rl0, int32_t rl1)
 {
@@ -154,6 +175,36 @@ R_FN void r_name(patch_t *q, uint32_t kind)
         q->name[i++] = 0;
 }
 
+/* CHAOS, the kind: every parameter anywhere in its range, but for a few kept so that it plays: an oscillator heard,
+ * notes that start and end within a few seconds, a level, an octave not out of hearing */
+static void rand_all(patch_t *q)
+{
+    uint32_t i;
+    for (i = P_A_WAVE; i < NP; i++) {
+        if ((i >= P_ARP_MODE && i <= P_TEMPO) || i == P_BEND)
+            continue;
+        q->p[i] = (uint8_t)r_n(PDEF[i].max + 1u);
+    }
+    for (i = 0; i < NFX; i++)                   /* about half the slots empty */
+        if (r_pct(45u))
+            q->p[P_FX1_TYPE + 4u * i] = 0;
+    for (i = 0; i < 8u; i++)
+        if (r_pct(35u))
+            q->p[P_X1_SRC + 3u * i] = 0;
+    q->p[P_A_LVL] = r_in(80, 127);
+    q->p[P_A_OCT] = r_in(2, 4);
+    q->p[P_B_OCT] = r_in(1, 5);
+    q->p[P_E1_A] = r_in(0, 70);
+    q->p[P_E1_R] = r_in(10, 96);
+    q->p[P_E1_S] = r_in(30, 127);
+    if (q->p[P_F_CUT] < 40)
+        q->p[P_F_CUT] = r_in(40, 100);
+    q->p[P_VOL] = 74;
+    q->p[P_VELSENS] = r_in(40, 100);
+    if (q->p[P_MODE] && r_pct(50u))
+        q->p[P_MODE] = MODE_POLY;
+}
+
 /* the dice thrown: q becomes a sound of this kind (RK_ANY: of a kind the dice pick; the kind is returned).
  * The arpeggiator, the tempo and the bend range are the player's: they stay as they are in `from`. */
 static uint32_t rand_patch(patch_t *q, const patch_t *from, uint32_t seed, uint32_t kind, uint32_t chaos)
@@ -174,6 +225,11 @@ static uint32_t rand_patch(patch_t *q, const patch_t *from, uint32_t seed, uint3
     q->p[P_BEND] = from->p[P_BEND];
     if (kind == RK_ANY || kind >= NRK)
         kind = r_wild(10u) ? RK_WEIRD : ANY[r_n(sizeof ANY)];
+    if (kind == RK_CHAOS) {
+        rand_all(q);
+        r_name(q, kind);
+        return kind;
+    }
     q->p[P_VELSENS] = r_in(60, 100);
     q->p[P_E3_A] = 0;
     q->p[P_E3_D] = r_in(50, 100);
@@ -462,6 +518,29 @@ static uint32_t rand_patch(patch_t *q, const patch_t *from, uint32_t seed, uint3
             q->p[P_B_WMODE] = WARPS[r_n(sizeof WARPS - 2u)];
             q->p[P_B_WARP] = r_in(20, 110);
         }
+    }
+
+    /* more CHAOS: more effects, any of them anywhere in the rack; their knobs further from where they start; more
+     * things moving */
+    {
+        static const uint8_t SRC[] = {S_LFO1, S_LFO2, S_LFO3, S_ENV2, S_ENV3, S_RND, S_VEL};
+        static const uint8_t DST[] = {D_APOS, D_AWARP, D_BPOS, D_CUT, D_RES, D_PAN, D_NOISE, D_BLVL, D_AMP};
+        for (i = 0; i < 3u; i++)
+            if (r_wild(i ? 16u : 30u))
+                r_fx_wild(q);
+        if (r_chaos > 64u)
+            for (i = 0; i < r_nfx; i++) {
+                uint32_t k;
+                for (k = 1; k < 4u; k++) {
+                    int32_t x = (int32_t)q->p[P_FX1_TYPE + 4u * i + k] + (int32_t)r_n(r_chaos - 63u) - (int32_t)(r_chaos - 64u) / 2;
+                    q->p[P_FX1_TYPE + 4u * i + k] = (uint8_t)(x < 0 ? 0 : x > 122 ? 122 : x);
+                }
+            }
+        for (i = 0; i < 3u; i++)
+            if (r_wild(18u)) {
+                v = r_in(15, 70);
+                r_mod(q, SRC[r_n(sizeof SRC)], DST[r_n(sizeof DST)], r_pct(50u) ? v : -v);
+            }
     }
 
     /* a filter that is not a low-pass sits where the notes are, and follows the keys: a band-pass far above
