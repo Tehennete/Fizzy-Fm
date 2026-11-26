@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# APLAT, built and signed on GitHub by the Firmware Hub's shared workflow (zvenson/fm1-build): it installs JieLi's
+# toolchain and SDK, runs ./build.sh (fm1-dock's own build, at a fixed commit, with APLAT as its module) and the
+# tests, and attests what comes out. Every run leaves build/aplat.dock and the .fwsc as the run's "packages"
+# artifact; a tag vX.Y also publishes them as the release of that tag (the hub's "Built from source on GitHub").
+# Do not replace a release's files by hand: the hub compares them with the attested ones.
+name: release
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    uses: zvenson/fm1-build/.github/workflows/build.yml@v1
+    permissions:
+      contents: write        # the release
+      id-token: write        # the signing certificate
+      attestations: write    # the attestation
+    with:
+      build: |
+        if [ "$GITHUB_REF_TYPE" = tag ]; then ./build.sh --release "${GITHUB_REF_NAME#v}"; else ./build.sh; fi
+      test: |
+        python3 -m pip install numpy
+        DOCK="$PWD/.dock/fm1-dock" python3 tests/run_tests.py
+      packages: build/aplat*
