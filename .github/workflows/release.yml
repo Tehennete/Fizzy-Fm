@@ -19,7 +19,7 @@ jobs:
       attestations: write    # the attestation
     with:
       build: |
-        if [ "$GITHUB_REF_TYPE" = tag ]; then ./build.sh --release "${GITHUB_REF_NAME#v}"; else ./build.sh; fi
+                if [ "$GITHUB_REF_TYPE" = tag ]; then sh ./build.sh --release "${GITHUB_REF_NAME#v}"; else sh ./build.sh; fi
       test: |
         python3 -m pip install numpy
         DOCK="$PWD/.dock/fm1-dock" python3 tests/run_tests.py
