@@ -76,7 +76,8 @@ static struct {
     uint32_t count;                             /* sub-steps of the count-in left */
     uint32_t acc;                               /* frames toward the next sub-step, Q16 */
     uint8_t key[16], nsound;                    /* the notes it is sounding, */
-    uint16_t left[16];                          /* and the sub-steps until each ends */
+    uint16_t left[16];                          /* the sub-steps until each ends, */
+    uint16_t since[16];                         /* and since each started */
     volatile uint8_t req;                       /* from the main loop: 1 start, 2 stop, 3 start counting in */
     uint32_t click_n, click_ph, click_inc;      /* a click: frames left, its phase */
 } pl;
@@ -125,7 +126,9 @@ static void pl_sub(void)
             pl.nsound--;
             pl.key[i] = pl.key[pl.nsound];
             pl.left[i] = pl.left[pl.nsound];
+            pl.since[i] = pl.since[pl.nsound];
         } else {
+            pl.since[i]++;
             i++;
         }
     }
@@ -142,13 +145,14 @@ static void pl_sub(void)
             pos += sw;
         if (pos >= L)
             pos -= L;
-        if (pos != pl.sp)
+        if (pos != pl.sp || live_on[EV_KEY(e)])  /* (a hand holds it: it sounds already) */
             continue;
         if (pl.nsound >= 16u) {                 /* (sixteen at once at most: the oldest goes) */
             pl_off(pl.key[0]);
             pl.nsound--;
             pl.key[0] = pl.key[pl.nsound];
             pl.left[0] = pl.left[pl.nsound];
+            pl.since[0] = pl.since[pl.nsound];
         }
         for (i = 0; i < pl.nsound; i++)         /* the same key again: it starts over */
             if (pl.key[i] == EV_KEY(e)) {
@@ -156,10 +160,12 @@ static void pl_sub(void)
                 pl.nsound--;
                 pl.key[i] = pl.key[pl.nsound];
                 pl.left[i] = pl.left[pl.nsound];
+                pl.since[i] = pl.since[pl.nsound];
                 break;
             }
         pl_on(EV_KEY(e), EV_VEL(e) ? EV_VEL(e) : 1u);
         pl.key[pl.nsound] = (uint8_t)EV_KEY(e);
+        pl.since[pl.nsound] = 0;
         pl.left[pl.nsound++] = (uint16_t)len_sub(e & 127u);
     }
     if (++pl.sp >= L) {                         /* round: the pattern asked for next */
@@ -168,6 +174,22 @@ static void pl_sub(void)
         if (pl.next != pl.pat && pl.next < SQ_PAT)
             pl.pat = pl.next;
     }
+}
+
+/* a hand plays a key the sequencer started less than half a step ago (a note played along, a little late): no
+ * second attack; the note is the hand's now, and ends when it is let go */
+static uint32_t pl_claim(uint32_t key)
+{
+    uint32_t i;
+    for (i = 0; i < pl.nsound; i++)
+        if (pl.key[i] == key && pl.since[i] <= SQ_SUB / 2u) {
+            pl.nsound--;
+            pl.key[i] = pl.key[pl.nsound];
+            pl.left[i] = pl.left[pl.nsound];
+            pl.since[i] = pl.since[pl.nsound];
+            return 1;
+        }
+    return 0;
 }
 
 static void pl_start(uint32_t count_in)
@@ -253,6 +275,22 @@ static void pat_put(pat_t *p, uint32_t e)       /* a note in: over one of the sa
         p->n++;
     }
 }
+/* a note recorded over the same key within two thirds of a step (a pass played again, a little off; sixteenths of
+ * one key are a whole step apart): it takes that one's place instead of doubling it */
+static void pat_put_near(pat_t *p, uint32_t e, uint32_t L)
+{
+    uint32_t k, pos = EV_POS(e), key = EV_KEY(e);
+    for (k = 0; k < p->n; k++) {
+        uint32_t q = EV_POS(p->ev[k]), d = q > pos ? q - pos : pos - q;
+        if (d > L / 2u)
+            d = L - d;                          /* (round the end of the pattern) */
+        if (EV_KEY(p->ev[k]) == key && d <= (SQ_SUB * 2u) / 3u) {
+            p->ev[k] = e;
+            return;
+        }
+    }
+    pat_put(p, e);
+}
 static void rec_note_on(uint32_t key, uint32_t vel)
 {
     pat_t *p = &pats[pl.pat];
@@ -264,7 +302,7 @@ static void rec_note_on(uint32_t key, uint32_t vel)
     if (pos >= L)
         pos = 0;
     rec_at[key] = (uint16_t)(pos + 1u);
-    pat_put(p, ev_make(pos, key, vel ? vel : 1u, SQ_SUB - 1u));
+    pat_put_near(p, ev_make(pos, key, vel ? vel : 1u, SQ_SUB - 1u), L);
     pat_dirty = 1;
     pat_ver++;
 }

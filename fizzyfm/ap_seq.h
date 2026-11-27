@@ -37,6 +37,8 @@ static struct {
 } sq;
 static volatile uint32_t seq_ext;               /* MIDI's clock leads (the screen) */
 static void pl_pulse(void);                     /* (the sequencer's, ap_pat.h) */
+static uint32_t pl_claim(uint32_t key);
+static uint8_t live_on[128];                    /* the keys held by a hand (the FM-1's or MIDI's), not the sequencer */
 
 static void arp_stop(void)
 {
@@ -159,7 +161,7 @@ static void seq_pulse(void)
 /* at the start of render(): the events and MIDI's pulses since the last one */
 static void seq_begin(uint32_t n)
 {
-    uint32_t arp = PV(ARP_MODE) != ARP_OFF;
+    uint32_t arp = PV(ARP_MODE) != ARP_OFF, i;
     if (arp != sq.was_on) {                     /* the arpeggio switched: nothing left hanging */
         arp_stop();
         if (!arp) {
@@ -175,14 +177,20 @@ static void seq_begin(uint32_t n)
         ev_r++;
         switch (e.type) {
         case EV_ON:
+            live_on[e.a & 127u] = 1;
+            if (pl_claim(e.a))                  /* the sequencer just played it: the hand takes that note over */
+                break;
             if (arp) arp_note_on(e.a, e.b); else eng_note_on(e.a, e.b);
             break;
         case EV_OFF:
+            live_on[e.a & 127u] = 0;
             if (arp) arp_note_off(e.a); else eng_note_off(e.a);
             break;
         case EV_PRESS: eng_pressure(e.a, e.b); break;
         case EV_PEDAL: eng_pedal(e.a); break;
         case EV_PANIC:
+            for (i = 0; i < 128u; i++)
+                live_on[i] = 0;
             sq.nheld = 0;
             sq.down = 0;
             arp_stop();

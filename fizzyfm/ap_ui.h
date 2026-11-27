@@ -971,7 +971,7 @@ static void disp_rand(uint16_t c)
                                                  : i == rd.pos && !rd.trying ? c : U_DIM);
     t_draw(148, 57, F_M, rd.trying ? "NOT KEPT" : rd.pos ? "KEPT" : rd.before ? "BEFORE" : "", rd.trying ? U_WARN : U_TXT, U_BG);
     t_draw(8, 84, F_M, rd.what ? "SEL: A VARIATION OF THIS" : "SEL: A NEW SOUND", U_DIM, U_BG);
-    t_draw(8, 102, F_M, "HOLD SEL: KEEP IT", U_DIM, U_BG);
+    t_draw(8, 102, F_M, rd.trying ? "HOLD SEL: KEEP IT" : rd.pos ? "HOLD SEL: TAKE IT OUT" : "", U_DIM, U_BG);
 }
 
 /* ---- the sequencer: its 64 steps as four rows of sixteen. A step with notes on its colour, a mark for each of

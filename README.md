@@ -61,13 +61,16 @@ one under each knob, the one last turned on the section's colour. [All 31 pages]
   leaves them where they were played. Four patterns (A to D, the next one waits for the end of the bar), up to 64
   steps and 192 notes each, chords and ties too, swing from the ARP page, MIDI clock and START / STOP. The STEPS page
   writes a step at a time from the keys. SEL undoes the last pass (again: redoes it), REC held clears the pattern.
+  A note played again over a pass takes the place of the one it repeats, and a key held or played along is not
+  played a second time by the pattern.
   The patterns are kept in the flash when it stops.
 - **Dice** (HOME twice: the RANDOM page): SEL throws a sound, not noise: a recipe for each KIND (bass, lead, pad,
   pluck, keys, bell, weird, or any) says which tables suit it, how its envelopes go, what moves what and which
   effects follow, and the dice choose inside it. CHAOS widens the recipe (odd tables and filters, warps, more
   modulation, more effects anywhere in the rack); the CHAOS kind throws every parameter at random. SEL THROWS: NEW,
   or VARY (this sound, moved a little). Each throw goes over the one before: nothing is kept until SEL is held. KEPT
-  goes back through the eight sounds kept and the one before the dice. SAVE keeps one for good.
+  goes back through the eight sounds kept and the one before the dice; SEL held on a sound kept takes it out. SAVE
+  keeps one for good.
 - **Every parameter is an NRPN**, in and out: that is how the editor talks to it, over USB, the DIN jack or
   Bluetooth.
 

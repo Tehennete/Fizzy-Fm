@@ -433,6 +433,22 @@ static void rand_keep(void)
     ui_s.d_tile = 15;
     ui_s.d_disp = 1;
 }
+/* the sound kept that shows, out of the slots (the ones after it go one back); it still sounds, not kept: held
+ * again, SEL keeps it again */
+static void rand_drop(void)
+{
+    uint32_t i;
+    rd.tkind = rd.how[rd.pos - 1u];             /* (kept again: as what it was) */
+    for (i = rd.pos; i < rd.n; i++) {
+        rh[i - 1u] = rh[i];
+        rd.how[i - 1u] = rd.how[i];
+    }
+    rd.n--;
+    rd.trying = 1;
+    say("TAKEN OUT");
+    ui_s.d_tile = 15;
+    ui_s.d_disp = 1;
+}
 static void rand_browse(int32_t clicks)         /* KEPT: 0 the sound before the dice, 1.. the ones kept */
 {
     int32_t from = rd.trying ? (int32_t)rd.n + 1 : (int32_t)rd.pos, to = clampi(from + clicks, rd.before ? 0 : 1, (int32_t)rd.n);
@@ -755,8 +771,14 @@ static void sel_action(void)
 }
 static void sel_held(void)                      /* SEL held 0.6 s */
 {
-    if (PAGES[ui_s.page].disp == DS_RAND)
+    if (PAGES[ui_s.page].disp != DS_RAND)
+        return;
+    if (rd.trying)
         rand_keep();
+    else if (rd.pos)
+        rand_drop();
+    else
+        say("THE SOUND BEFORE STAYS");
 }
 /* REC: stopped, a bar counted in and then recording; playing, recording on or off. Held 1.5 s: the pattern
  * cleared (and what the press did undone) */
